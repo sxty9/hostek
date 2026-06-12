@@ -1,0 +1,29 @@
+[Unit]
+Description=hostek — live server metrics & configuration (holistic service)
+After=network.target holistic-dashboard.service
+
+[Service]
+User=hostek
+Group=hostek
+# Validate the same session as the dashboard via the shared JWT secret.
+Environment=HOLISTIC_SECRET_FILE=/etc/holistic/jwt-secret
+# Admin = single Linux source of truth (the sudo group).
+Environment=HOSTEK_ADMIN_GROUP=sudo
+ExecStart=/opt/hostek/bin/hostekd --listen 127.0.0.1:8771
+Restart=on-failure
+RestartSec=2
+# Must be false: the daemon escalates via the narrow sudo wrapper allowlist for config writes.
+NoNewPrivileges=false
+# Conservative hardening. Deliberately OMITTED (they would break the sudo escalation or the
+# wrapper's writes under /etc): ProtectSystem, RestrictSUIDSGID, CapabilityBoundingSet,
+# SystemCallFilter. Re-verify on the target if you tighten further.
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

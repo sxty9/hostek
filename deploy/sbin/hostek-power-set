@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# hostek-power-set on|off — toggle OS-level "headless / always-on" power settings.
+# Installed root-owned (0750) in /usr/local/sbin and invoked by hostekd via `sudo -n`.
+# Idempotent. The BIOS "Restore AC Power Loss" setting is firmware-level and managed
+# in UEFI, not here.
+set -euo pipefail
+
+DROPIN=/etc/systemd/logind.conf.d/10-hostek-headless.conf
+SLEEP_TARGETS=(sleep.target suspend.target hibernate.target hybrid-sleep.target)
+
+case "${1:-}" in
+  on)
+    install -d -m 0755 /etc/systemd/logind.conf.d
+    cat > "$DROPIN" <<'EOF'
+# Managed by hostek — keep a headless server running without a monitor.
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+EOF
+    systemctl mask "${SLEEP_TARGETS[@]}" >/dev/null 2>&1 || true
+    systemctl restart systemd-logind >/dev/null 2>&1 || true
+    echo "[hostek] headless mode enabled"
+    ;;
+  off)
+    rm -f "$DROPIN"
+    systemctl unmask "${SLEEP_TARGETS[@]}" >/dev/null 2>&1 || true
+    systemctl restart systemd-logind >/dev/null 2>&1 || true
+    echo "[hostek] headless mode disabled"
+    ;;
+  *)
+    echo "usage: hostek-power-set on|off" >&2
+    exit 2
+    ;;
+esac

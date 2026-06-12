@@ -1,0 +1,4 @@
+# hostek's daemon runs unprivileged and escalates ONLY to this single, fixed wrapper.
+# Installed root:root 0440 at /etc/sudoers.d/hostek (validated with `visudo -cf`).
+# Never edit /etc/sudoers.d/holistic from hostek.
+hostek ALL=(root) NOPASSWD: /usr/local/sbin/hostek-power-set
