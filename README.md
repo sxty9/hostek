@@ -2,8 +2,9 @@
 
 **Holistic service** für Live-Überwachung und Konfiguration eines headless Ubuntu-Servers.
 hostek klinkt sich als Service in das [holistic](../holistic)-Dashboard ein: ein **Go-Daemon**
-liefert Live-Metriken (CPU, RAM, Disk, Netz + Task-Manager-artige Prozessliste) und verwaltet
-OS-seitige Server-Einstellungen; das Frontend ist ein **`@holistic/ui`-Plugin**.
+liefert Live-Metriken (CPU, RAM, GPU, System-SSD-I/O, Netz + Task-Manager-artige Prozessliste mit
+GPU/Netz pro Prozess), ein Hardware-Inventar und eine Disk-Übersicht, und verwaltet OS-seitige
+Server-Einstellungen; das Frontend ist ein **`@holistic/ui`-Plugin**.
 
 ## Architektur
 
@@ -17,8 +18,10 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
 - **Single Sign-On:** hostekd validiert dieselbe holistic-Session (HS256-JWT im Cookie
   `h_access`, Secret `/etc/holistic/jwt-secret`) — kein eigener Login.
 - **Rollen (Single Source of Truth = Linux):** **Admin = Mitglied der `sudo`-Gruppe**.
-  Admins sehen alle Metriken inkl. Prozesse und dürfen konfigurieren; alle anderen sehen
-  nur die Gesamtauslastung pro Komponente.
+  Admins sehen alle Tabs (`System · Performance · Config · Disks · Processes`) und dürfen
+  konfigurieren. Nicht-Admins sind **read-only** und sehen nur `System · Performance · Disks`
+  (Performance nur als Gesamtauslastung pro Komponente — keine Prozess-Sicht, kein Config).
+  Identifizierende Felder (Disk-Serial, NIC-MAC) werden für Nicht-Admins redigiert.
 - **Least privilege:** Der Daemon läuft als unprivilegierter User `hostek`; Config-Schreib-
   zugriffe gehen ausschließlich über den schmalen sudo-Wrapper `hostek-power-set`.
 
@@ -28,7 +31,11 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
 backend/        Go-Daemon (hostekd)
   cmd/hostekd/      entry point
   internal/auth/    shared-JWT validation + Linux-group/admin resolution + CSRF
-  internal/metrics/ gopsutil sampling, ring buffer, per-process CPU% deltas
+  internal/metrics/ gopsutil sampling, ring buffer, per-process CPU% deltas, system-disk I/O
+  internal/gpu/     NVIDIA sampling via nvidia-smi (overall + per-process)
+  internal/netmon/  per-process network via the privileged hostek-netmon co-process
+  internal/hardware/ hardware inventory (System tab) + all-disks list (Disks tab)
+  internal/diskutil/ root block-device resolution (shared)
   internal/sysconfig/ read/apply headless power settings
   internal/api/     HTTP routes under /api/services/hostek/
 ui/             @holistic/ui plugin (linked into holistic/frontend/external/hostek)
@@ -45,9 +52,12 @@ ist vorhanden und das Dashboard installiert.
 sudo ./hostek setup        # HOLISTIC_REPO wird autodetektiert (../holistic, /code/holistic, …)
 ```
 
-`setup` baut den Daemon, verdrahtet systemd + sudo + Caddy, verlinkt das UI-Plugin und baut
-die Dashboard-SPA neu. Danach erscheint **„System"** in der holistic-Sidebar (Admins zusätzlich
-mit *Processes* und *Config*). `holistic update` baut die SPA neu; hostek bleibt verlinkt.
+`setup` baut den Daemon, verdrahtet systemd + sudo + Caddy (inkl. der privilegierten read-only
+Wrapper `hostek-hwinfo`/`hostek-netmon`), installiert best-effort die optionalen Probe-Tools
+(`lshw dmidecode smartmontools nethogs i2c-tools pciutils`), verlinkt das UI-Plugin und baut die
+Dashboard-SPA neu. Danach erscheint **„System"** in der holistic-Sidebar (Nicht-Admins sehen
+*System · Performance · Disks*; Admins zusätzlich *Config* und *Processes*). `holistic update`
+baut die SPA neu; hostek bleibt verlinkt.
 
 Weitere Kommandos: `hostek build` (nur Daemon neu bauen), `hostek start|stop|restart`,
 `hostek status`, `hostek power on|off`, `hostek update`, `hostek uninstall [--purge]`.
@@ -56,10 +66,12 @@ Weitere Kommandos: `hostek build` (nur Daemon neu bauen), `hostek start|stop|res
 
 | Methode | Pfad | Rolle | Zweck |
 |---|---|---|---|
-| GET | `summary` | alle | Aggregat (CPU/RAM/Disk/Netz/Load/Uptime) |
-| GET | `metrics` | alle | Zeitreihen (Ring-Buffer) für Charts |
+| GET | `summary` | alle | Aggregat (CPU/RAM/GPU/SSD-I/O/Netz/Load/Uptime) |
+| GET | `metrics` | alle | Zeitreihen (Ring-Buffer): CPU/RAM/GPU %, SSD read/write/busy, Netz |
 | GET | `host` | alle | statische Host-Infos |
-| GET | `processes` | **admin** | Prozessliste (PID, CPU%, RAM, Status) |
+| GET | `hardware` | alle | Hardware-Inventar (System-Tab; Serial/MAC für Nicht-Admins redigiert) |
+| GET | `disks` | alle | alle Disks: Port, Kapazität, Belegung (Serial nur Admin) |
+| GET | `processes` | **admin** | Prozessliste (PID, CPU%, RAM, GPU%/Engine, Netz, Status) |
 | GET | `config/power` | **admin** | Headless/Always-on-Zustand (+ BIOS-Info) |
 | POST | `config/power` | **admin** | Headless-Settings anwenden (CSRF) |
 
@@ -84,8 +96,16 @@ ln -sfn "$PWD/ui" ../holistic/frontend/external/hostek
 
 ## Bekannte Grenzen (v1)
 
-- **Pro-Prozess** werden CPU%, RAM (RSS) und Status erfasst; **Netzwerk pro Prozess** ist
-  unprivilegiert nicht zuverlässig (Netz nur auf System-Ebene).
-- Live-Transport ist **Polling** (1–2 s) über den geteilten API-Client; SSE ist als spätere
+- **GPU:** NVIDIA via `nvidia-smi` (unprivilegiert). Pro-Prozess-GPU ist **best-effort**
+  (nur GPU-nutzende Prozesse via `nvidia-smi pmon`). Ohne NVIDIA-GPU werden die GPU-Bereiche
+  ausgeblendet.
+- **Netzwerk pro Prozess** ist unprivilegiert nicht erfassbar — es läuft über den optionalen
+  privilegierten `hostek-netmon`-Helper (`nethogs`). Fehlt nethogs/Helper, zeigt die Spalte „—".
+- **Hardware-Detail** (RAM-Module, Mainboard, SMART) kommt aus `dmidecode`/`smartctl` über
+  `hostek-hwinfo`. **RAM-Timings** (CL-tRCD-…) brauchen SPD-Zugriff via `decode-dimms` (i2c) und
+  sind je nach Board nicht verfügbar.
+- **System-SSD** = das Block-Device hinter `/`; im Verlauf werden Lese/Schreib-Rate und Aktiv-Zeit
+  gezeigt (nicht Belegung). Belegung aller Disks lebt im **Disks**-Tab.
+- Live-Transport ist **Polling** (1–3 s) über den geteilten API-Client; SSE ist als spätere
   Optimierung vorgesehen.
 - Erfordert Linux ≥ Go 1.22 zum Bauen (Ubuntu 24.04 `golang-go`).

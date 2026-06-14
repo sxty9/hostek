@@ -9,6 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"hostek/internal/diskutil"
+	"hostek/internal/gpu"
+	"hostek/internal/netmon"
+
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
@@ -44,21 +48,33 @@ type Summary struct {
 	Disks        []DiskUsage `json:"disks"`
 	NetRxRate    float64     `json:"netRxRate"` // bytes/sec
 	NetTxRate    float64     `json:"netTxRate"`
-	Load1        float64     `json:"load1"`
-	Load5        float64     `json:"load5"`
-	Load15       float64     `json:"load15"`
-	Uptime       uint64      `json:"uptime"`
-	Procs        int         `json:"procs"`
+	// GPU(s) — empty when no NVIDIA GPU / nvidia-smi is present.
+	GPUs []gpu.GPU `json:"gpus,omitempty"`
+	// System disk (the device backing "/") activity — Task-Manager-style read/write.
+	SysDiskDevice      string  `json:"sysDiskDevice,omitempty"`
+	SysDiskReadRate    float64 `json:"sysDiskReadRate"`    // bytes/sec
+	SysDiskWriteRate   float64 `json:"sysDiskWriteRate"`   // bytes/sec
+	SysDiskBusyPercent float64 `json:"sysDiskBusyPercent"` // active-time %, 0-100
+	Load1              float64 `json:"load1"`
+	Load5              float64 `json:"load5"`
+	Load15             float64 `json:"load15"`
+	Uptime             uint64  `json:"uptime"`
+	Procs              int     `json:"procs"`
 }
 
-// Sample is one point in the time-series ring buffer (for charts).
+// Sample is one point in the time-series ring buffer (for charts). Percentage fields
+// feed the combined utilization chart; the byte-rate fields feed the per-component
+// detail graphs (network Rx/Tx, system-disk read/write).
 type Sample struct {
-	Time  int64   `json:"time"`
-	CPU   float64 `json:"cpu"`
-	Mem   float64 `json:"mem"`
-	NetRx float64 `json:"netRx"`
-	NetTx float64 `json:"netTx"`
-	Disk  float64 `json:"disk"`
+	Time     int64   `json:"time"`
+	CPU      float64 `json:"cpu"`      // %
+	Mem      float64 `json:"mem"`      // %
+	GPU      float64 `json:"gpu"`      // % (max across GPUs)
+	SSDBusy  float64 `json:"ssdBusy"`  // system-disk active-time %
+	SSDRead  float64 `json:"ssdRead"`  // bytes/sec
+	SSDWrite float64 `json:"ssdWrite"` // bytes/sec
+	NetRx    float64 `json:"netRx"`    // bytes/sec
+	NetTx    float64 `json:"netTx"`    // bytes/sec
 }
 
 // Process is one row of the per-process breakdown (admin-only).
@@ -69,7 +85,14 @@ type Process struct {
 	CPUPercent float64 `json:"cpuPercent"`
 	MemRSS     uint64  `json:"memRss"`
 	MemPercent float64 `json:"memPercent"`
-	Status     string  `json:"status"`
+	// GPU — best-effort via nvidia-smi pmon; zero/empty when the process uses no GPU.
+	GPUPercent float64 `json:"gpuPercent"`
+	GPUEngine  string  `json:"gpuEngine,omitempty"`
+	GPUMem     uint64  `json:"gpuMem,omitempty"`
+	// Network — best-effort via the privileged netmon co-process; zero when unavailable.
+	NetRxRate float64 `json:"netRxRate"`
+	NetTxRate float64 `json:"netTxRate"`
+	Status    string  `json:"status"`
 }
 
 // HostInfo is static (read once at startup).
@@ -97,6 +120,11 @@ type Collector struct {
 	interval time.Duration
 	ringCap  int
 
+	// External samplers (GPU via nvidia-smi, per-process network via the privileged
+	// co-process). Both are always non-nil; they degrade to empty when unsupported.
+	gpu *gpu.Sampler
+	net *netmon.Sampler
+
 	mu       sync.RWMutex
 	summary  Summary
 	ring     []Sample
@@ -109,16 +137,22 @@ type Collector struct {
 	prevNetTime          time.Time
 	prevProc             map[int32]procCPU
 	ncpu                 int
+
+	sysDevice                                   string // device backing "/", e.g. "nvme0n1"
+	prevDiskRead, prevDiskWrite, prevDiskIoTime uint64
+	prevDiskTime                                time.Time
 }
 
 // New returns a collector sampling at the given interval (~120s of history at 2s).
-func New(interval time.Duration) *Collector {
-	return &Collector{interval: interval, ringCap: 180, prevProc: map[int32]procCPU{}, ncpu: runtime.NumCPU()}
+// The GPU and network samplers are injected so the daemon owns their lifecycles.
+func New(interval time.Duration, g *gpu.Sampler, n *netmon.Sampler) *Collector {
+	return &Collector{interval: interval, ringCap: 180, gpu: g, net: n, prevProc: map[int32]procCPU{}, ncpu: runtime.NumCPU()}
 }
 
 // Start loads static host info, primes the first sample, then samples on a ticker.
 func (c *Collector) Start() {
 	c.loadHostInfo()
+	c.sysDevice = diskutil.RootDevice()
 	// Prime gopsutil's global CPU-time baseline so the first sample reflects a real
 	// interval, not time-since-process-start (cpu.Percent(0,...) is delta-based).
 	_, _ = cpu.Percent(0, false)
@@ -192,6 +226,12 @@ func (c *Collector) sample() {
 	}
 	s.Disks = collectDisks()
 	s.NetRxRate, s.NetTxRate = c.netRates(now)
+	s.SysDiskDevice = c.sysDevice
+	s.SysDiskReadRate, s.SysDiskWriteRate, s.SysDiskBusyPercent = c.diskRates(now)
+
+	gpuSnap := c.gpu.Get()
+	s.GPUs = gpuSnap.GPUs
+
 	if l, err := load.Avg(); err == nil {
 		s.Load1, s.Load5, s.Load15 = round(l.Load1), round(l.Load5), round(l.Load15)
 	}
@@ -199,14 +239,26 @@ func (c *Collector) sample() {
 		s.Uptime = up
 	}
 
-	procs := c.sampleProcs(now)
+	procs := c.sampleProcs(now, gpuSnap, c.net.Get())
 	s.Procs = len(procs)
 
-	var diskPct float64
-	if len(s.Disks) > 0 {
-		diskPct = s.Disks[0].Percent
+	var gpuPct float64
+	for _, g := range s.GPUs {
+		if g.UtilPercent > gpuPct {
+			gpuPct = g.UtilPercent
+		}
 	}
-	smp := Sample{Time: s.Time, CPU: s.CPUPercent, Mem: s.MemPercent, NetRx: s.NetRxRate, NetTx: s.NetTxRate, Disk: diskPct}
+	smp := Sample{
+		Time:     s.Time,
+		CPU:      s.CPUPercent,
+		Mem:      s.MemPercent,
+		GPU:      gpuPct,
+		SSDBusy:  s.SysDiskBusyPercent,
+		SSDRead:  s.SysDiskReadRate,
+		SSDWrite: s.SysDiskWriteRate,
+		NetRx:    s.NetRxRate,
+		NetTx:    s.NetTxRate,
+	}
 
 	c.mu.Lock()
 	c.summary = s
@@ -263,7 +315,49 @@ func (c *Collector) netRates(now time.Time) (rx, tx float64) {
 	return rx, tx
 }
 
-func (c *Collector) sampleProcs(now time.Time) []Process {
+// diskRates returns the system disk's read/write throughput (bytes/sec) and active-time
+// percentage (Windows-style "% busy") via /proc/diskstats deltas. Zero until primed.
+func (c *Collector) diskRates(now time.Time) (read, write, busy float64) {
+	if c.sysDevice == "" {
+		return 0, 0, 0
+	}
+	io, err := disk.IOCounters(c.sysDevice)
+	if err != nil || len(io) == 0 {
+		return 0, 0, 0
+	}
+	st, ok := io[c.sysDevice]
+	if !ok {
+		for _, v := range io { // IOCounters keys by device name; take the single entry.
+			st = v
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return 0, 0, 0
+	}
+	if !c.prevDiskTime.IsZero() {
+		if dt := now.Sub(c.prevDiskTime).Seconds(); dt > 0 {
+			if st.ReadBytes >= c.prevDiskRead {
+				read = float64(st.ReadBytes-c.prevDiskRead) / dt
+			}
+			if st.WriteBytes >= c.prevDiskWrite {
+				write = float64(st.WriteBytes-c.prevDiskWrite) / dt
+			}
+			if st.IoTime >= c.prevDiskIoTime {
+				// IoTime is milliseconds spent doing I/O; over dt seconds → % active.
+				busy = float64(st.IoTime-c.prevDiskIoTime) / (dt * 1000) * 100
+				if busy > 100 {
+					busy = 100
+				}
+			}
+		}
+	}
+	c.prevDiskRead, c.prevDiskWrite, c.prevDiskIoTime, c.prevDiskTime = st.ReadBytes, st.WriteBytes, st.IoTime, now
+	return round(read), round(write), round(busy)
+}
+
+func (c *Collector) sampleProcs(now time.Time, gpuSnap gpu.Snapshot, netRates map[int32]netmon.Rate) []Process {
 	ps, err := process.Processes()
 	if err != nil {
 		c.mu.RLock()
@@ -297,7 +391,7 @@ func (c *Collector) sampleProcs(now time.Time) []Process {
 		if st, err := p.Status(); err == nil && len(st) > 0 {
 			status = st[0]
 		}
-		out = append(out, Process{
+		proc := Process{
 			PID:        p.Pid,
 			Name:       name,
 			User:       username,
@@ -305,7 +399,14 @@ func (c *Collector) sampleProcs(now time.Time) []Process {
 			MemRSS:     rss,
 			MemPercent: round(float64(memPct)),
 			Status:     status,
-		})
+		}
+		if g, ok := gpuSnap.Proc[p.Pid]; ok {
+			proc.GPUPercent, proc.GPUEngine, proc.GPUMem = g.Util, g.Engine, g.Mem
+		}
+		if r, ok := netRates[p.Pid]; ok {
+			proc.NetRxRate, proc.NetTxRate = round(r.Rx), round(r.Tx)
+		}
+		out = append(out, proc)
 	}
 	c.prevProc = next
 	sort.Slice(out, func(i, j int) bool { return out[i].CPUPercent > out[j].CPUPercent })

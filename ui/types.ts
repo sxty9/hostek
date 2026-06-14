@@ -9,6 +9,17 @@ export interface DiskUsage {
   percent: number;
 }
 
+export interface GPU {
+  index: number;
+  name: string;
+  utilPercent: number;
+  memUsed: number;
+  memTotal: number;
+  memPercent: number;
+  tempC: number;
+  powerW: number;
+}
+
 export interface Summary {
   time: number;
   cpuPercent: number;
@@ -24,6 +35,11 @@ export interface Summary {
   disks: DiskUsage[];
   netRxRate: number;
   netTxRate: number;
+  gpus?: GPU[];
+  sysDiskDevice?: string;
+  sysDiskReadRate: number;
+  sysDiskWriteRate: number;
+  sysDiskBusyPercent: number;
   load1: number;
   load5: number;
   load15: number;
@@ -35,9 +51,12 @@ export interface Sample {
   time: number;
   cpu: number;
   mem: number;
+  gpu: number;
+  ssdBusy: number;
+  ssdRead: number;
+  ssdWrite: number;
   netRx: number;
   netTx: number;
-  disk: number;
 }
 export interface SeriesResponse {
   samples: Sample[];
@@ -50,6 +69,11 @@ export interface Process {
   cpuPercent: number;
   memRss: number;
   memPercent: number;
+  gpuPercent: number;
+  gpuEngine?: string;
+  gpuMem?: number;
+  netRxRate: number;
+  netTxRate: number;
   status: string;
 }
 export interface ProcessesResponse {
@@ -68,6 +92,122 @@ export interface HostInfo {
   cpuThreads: number;
   memTotal: number;
   bootTime: number;
+}
+
+// ── Hardware inventory (System tab) ──────────────────────────────────────────────
+export interface CPUInfo {
+  model?: string;
+  vendor?: string;
+  socket?: string;
+  cores?: number;
+  threads?: number;
+  family?: string;
+  baseClockMhz?: number;
+  maxClockMhz?: number;
+  curClockMhz?: number;
+  perCoreMhz?: number[];
+  cacheL1?: string;
+  cacheL2?: string;
+  cacheL3?: string;
+}
+
+export interface MemoryModule {
+  slot?: string;
+  sizeBytes?: number;
+  type?: string;
+  speedMhz?: number;
+  configuredMhz?: number;
+  manufacturer?: string;
+  partNumber?: string;
+  rank?: string;
+  timings?: string;
+}
+
+export interface MemoryInfo {
+  totalBytes?: number;
+  modules?: MemoryModule[];
+}
+
+export interface BoardInfo {
+  manufacturer?: string;
+  model?: string;
+  version?: string;
+  biosVendor?: string;
+  biosVersion?: string;
+  biosDate?: string;
+}
+
+export interface GPUInfo {
+  name?: string;
+  memTotalBytes?: number;
+  driver?: string;
+  cuda?: string;
+  baseClockMhz?: number;
+  boostClockMhz?: number;
+  curClockMhz?: number;
+  memClockMhz?: number;
+  memMaxClockMhz?: number;
+  tempC?: number;
+  powerW?: number;
+  powerLimitW?: number;
+}
+
+export interface DiskHWInfo {
+  device?: string;
+  model?: string;
+  serial?: string;
+  firmware?: string;
+  sizeBytes?: number;
+  type?: string;
+  health?: string;
+  tempC?: number;
+  powerOnHours?: number;
+}
+
+export interface NICInfo {
+  name?: string;
+  model?: string;
+  mac?: string;
+  speedMbps?: number;
+  driver?: string;
+  link?: string;
+}
+
+export interface HardwareInfo {
+  hostname?: string;
+  cpu: CPUInfo;
+  memory: MemoryInfo;
+  board: BoardInfo;
+  gpus?: GPUInfo[];
+  disk: DiskHWInfo;
+  nics?: NICInfo[];
+}
+
+// ── Disks tab (all devices) ──────────────────────────────────────────────────────
+export interface DiskPartition {
+  name: string;
+  mount?: string;
+  fstype?: string;
+  sizeBytes: number;
+  used?: number;
+  total?: number;
+  percent?: number;
+}
+
+export interface DiskDevice {
+  name: string;
+  model?: string;
+  serial?: string;
+  transport?: string;
+  port?: string;
+  sizeBytes: number;
+  rotational: boolean;
+  type?: string;
+  isSystem: boolean;
+  partitions?: DiskPartition[];
+}
+export interface DisksResponse {
+  disks: DiskDevice[];
 }
 
 export interface BiosNote {

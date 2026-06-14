@@ -1,29 +1,37 @@
 import { useState } from 'react';
 import { ContentRegion, SegmentedControl, Stack, type SegmentedOption, type ServiceContextProps } from '@holistic/ui';
-import { Overview } from './Overview';
-import { Processes } from './Processes';
+import { System } from './System';
+import { Performance } from './Performance';
 import { Config } from './Config';
+import { Disks } from './Disks';
+import { Processes } from './Processes';
 
-type Tab = 'overview' | 'processes' | 'config';
+type Tab = 'system' | 'performance' | 'config' | 'disks' | 'processes';
 
 export function Dashboard(props: ServiceContextProps) {
   const { user } = props;
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<Tab>('system');
 
-  // Admins (Linux sudo) get the per-process breakdown and server configuration.
-  // Everyone else sees only the aggregate Overview.
-  const options: SegmentedOption<Tab>[] = [{ value: 'overview', label: 'Overview' }];
-  if (user.isAdmin) {
-    options.push({ value: 'processes', label: 'Processes' }, { value: 'config', label: 'Config' });
-  }
+  // Everyone (read-only) sees System, Performance (aggregate only) and Disks. Admins
+  // (Linux sudo) additionally get Config and the per-process Processes breakdown.
+  // Order: System · Performance · Config · Disks · Processes.
+  const options: SegmentedOption<Tab>[] = [
+    { value: 'system', label: 'System' },
+    { value: 'performance', label: 'Performance' },
+  ];
+  if (user.isAdmin) options.push({ value: 'config', label: 'Config' });
+  options.push({ value: 'disks', label: 'Disks' });
+  if (user.isAdmin) options.push({ value: 'processes', label: 'Processes' });
 
   return (
     <ContentRegion>
       <Stack gap={4}>
-        {user.isAdmin && <SegmentedControl value={tab} onChange={setTab} options={options} />}
-        {tab === 'overview' && <Overview {...props} />}
-        {tab === 'processes' && user.isAdmin && <Processes {...props} />}
+        <SegmentedControl value={tab} onChange={setTab} options={options} />
+        {tab === 'system' && <System {...props} />}
+        {tab === 'performance' && <Performance {...props} />}
         {tab === 'config' && user.isAdmin && <Config {...props} />}
+        {tab === 'disks' && <Disks {...props} />}
+        {tab === 'processes' && user.isAdmin && <Processes {...props} />}
       </Stack>
     </ContentRegion>
   );
