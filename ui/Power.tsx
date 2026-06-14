@@ -87,17 +87,16 @@ export function Power({ api }: ServiceContextProps) {
 
   return (
     <Stack gap={4}>
-      <Panel title="Power draw" className="p-4">
+      <Panel
+        title="Power draw"
+        actions={
+          <Text variant="title3" weight="semibold" className="tabular-nums">
+            {watts(currentTotal)}
+          </Text>
+        }
+        className="p-4"
+      >
         <Stack gap={3}>
-          <Stack direction="row" justify="between" align="baseline" gap={3}>
-            <Text variant="caption" color="secondary">
-              Watts drawn per component over time — CPU via RAPL, GPU via nvidia-smi. Hover a legend entry for its 1 / 5 / 15-min average.
-            </Text>
-            <Text variant="title3" weight="semibold" className="tabular-nums shrink-0">
-              {watts(currentTotal)}
-            </Text>
-          </Stack>
-
           {series.length === 0 ? (
             <EmptyState
               icon={<BoltIcon />}

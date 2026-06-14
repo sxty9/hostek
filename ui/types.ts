@@ -80,6 +80,21 @@ export interface PowerResponse {
   gpuAvailable: boolean;
 }
 
+export interface ThermalMeta {
+  key: string;
+  label: string;
+  source: string;
+  criticalC: number;
+}
+export interface ThermalSample {
+  time: number;
+  temps: Record<string, number>;
+}
+export interface ThermalResponse {
+  components: ThermalMeta[];
+  samples: ThermalSample[];
+}
+
 export interface Sample {
   time: number;
   cpu: number;

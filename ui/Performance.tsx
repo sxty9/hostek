@@ -1,6 +1,6 @@
 import {
   Box,
-  Gauge,
+  Divider,
   Grid,
   HoverPanel,
   Legend,
@@ -23,41 +23,6 @@ import type { Avg, Sample, SeriesResponse, Summary } from './types';
 
 const ZERO_AVG: Avg = { a1: 0, a5: 0, a15: 0 };
 
-// LoadHover wraps a component card so hovering it reveals that component's 1/5/15-min
-// utilization average (the per-component analogue of the system load average).
-function LoadHover({ title, color, avg, fmt, children }: { title: string; color: string; avg: Avg; fmt: (v: number) => string; children: ReactNode }) {
-  return (
-    <HoverPanel
-      block
-      width={300}
-      panel={
-        <Stack gap={2}>
-          <Stack direction="row" align="center" gap={1}>
-            <Box className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-            <Text variant="caption" weight="semibold">
-              {title} — load average
-            </Text>
-          </Stack>
-          <Stack direction="row" gap={5}>
-            {([['1 min', avg.a1], ['5 min', avg.a5], ['15 min', avg.a15]] as const).map(([l, v]) => (
-              <Stack key={l} gap={0}>
-                <Text variant="subhead" weight="semibold" className="tabular-nums">
-                  {fmt(v)}
-                </Text>
-                <Text variant="caption" color="secondary">
-                  {l}
-                </Text>
-              </Stack>
-            ))}
-          </Stack>
-        </Stack>
-      }
-    >
-      {children}
-    </HoverPanel>
-  );
-}
-
 const C = {
   cpu: 'rgb(var(--cpu))',
   ram: 'rgb(var(--ram))',
@@ -67,6 +32,35 @@ const C = {
   netDim: 'rgb(var(--net) / 0.45)',
   ssdDim: 'rgb(var(--ssd) / 0.45)',
 };
+
+function HoverTitle({ color, label }: { color: string; label: string }) {
+  return (
+    <Stack direction="row" align="center" gap={1}>
+      <Box className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+      <Text variant="caption" weight="semibold">
+        {label}
+      </Text>
+    </Stack>
+  );
+}
+
+// AvgRow shows a component's 1/5/15-min average (the per-component load average).
+function AvgRow({ avg, fmt }: { avg: Avg; fmt: (v: number) => string }) {
+  return (
+    <Stack direction="row" gap={5}>
+      {([['1 min', avg.a1], ['5 min', avg.a5], ['15 min', avg.a15]] as const).map(([l, v]) => (
+        <Stack key={l} gap={0}>
+          <Text variant="subhead" weight="semibold" className="tabular-nums">
+            {fmt(v)}
+          </Text>
+          <Text variant="caption" color="secondary">
+            {l}
+          </Text>
+        </Stack>
+      ))}
+    </Stack>
+  );
+}
 
 function MiniChart({ label, color, lines, percent, caption }: { label: string; color: string; lines: ChartSeries[]; percent?: boolean; caption?: ReactNode }) {
   return (
@@ -141,113 +135,168 @@ export function Performance({ api }: ServiceContextProps) {
     { label: 'Network (relative)', color: C.net },
   ];
 
+  // Tile hover panels (built lazily, only while the panel is open).
+  const cpuPanel = () => (
+    <Stack gap={3}>
+      <HoverTitle color={C.cpu} label="CPU — per-core load & average" />
+      <Grid minItemWidth={84} gap={2}>
+        {s.perCpu.map((p, i) => (
+          <Stack key={i} gap={1}>
+            <Text variant="caption" color="secondary">
+              Core {i}
+            </Text>
+            <ProgressBar value={p} tone="cpu" />
+          </Stack>
+        ))}
+      </Grid>
+      <Divider />
+      <AvgRow avg={L.cpu} fmt={pct} />
+    </Stack>
+  );
+
+  const gpuPanel = () => (
+    <Stack gap={3}>
+      <HoverTitle color={C.gpu} label="GPU — VRAM, utilization & average" />
+      {gpus.map((g, i) => {
+        const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : ''].filter(Boolean).join(' · ');
+        return (
+          <Stack key={i} gap={1}>
+            <Stack direction="row" justify="between" gap={2}>
+              <Text variant="caption" color="secondary">
+                GPU {g.index} · {g.utilPercent.toFixed(0)}% util
+              </Text>
+              {tp && (
+                <Text variant="caption" color="secondary">
+                  {tp}
+                </Text>
+              )}
+            </Stack>
+            <ProgressBar value={g.memPercent} tone="gpu" />
+            <Text variant="caption" color="secondary">
+              VRAM {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
+            </Text>
+          </Stack>
+        );
+      })}
+      <Divider />
+      <AvgRow avg={L.gpu} fmt={pct} />
+    </Stack>
+  );
+
+  const simplePanel = (color: string, label: string, detail: ReactNode, avg: Avg, fmt: (v: number) => string) => () => (
+    <Stack gap={3}>
+      <HoverTitle color={color} label={label} />
+      {detail}
+      <Divider />
+      <AvgRow avg={avg} fmt={fmt} />
+    </Stack>
+  );
+
   return (
     <Stack gap={4}>
-      {/* Top stat tiles */}
+      {/* Top stat tiles — hover any for its detail + 1/5/15-min average */}
       <Grid minItemWidth={220} gap={3}>
-        <Stat label="CPU" value={s.cpuPercent} unit="%" footer={<ProgressBar value={s.cpuPercent} tone="cpu" />} />
-        <Stat
-          label="Memory"
-          value={s.memPercent}
-          unit="%"
-          footer={
-            <Stack gap={1}>
-              <ProgressBar value={s.memPercent} tone="ram" />
-              <Text variant="caption" color="secondary">
-                {formatBytes(s.memUsed)} / {formatBytes(s.memTotal)}
-              </Text>
-            </Stack>
-          }
-        />
-        {hasGpu && (
+        <HoverPanel block width={380} panel={cpuPanel}>
+          <Stat label="CPU" value={s.cpuPercent} unit="%" footer={<ProgressBar value={s.cpuPercent} tone="cpu" />} />
+        </HoverPanel>
+
+        <HoverPanel
+          block
+          width={300}
+          panel={simplePanel(
+            C.ram,
+            'Memory',
+            <Text variant="caption" color="secondary">
+              {formatBytes(s.memUsed)} / {formatBytes(s.memTotal)} · {formatBytes(s.memCached)} cached
+            </Text>,
+            L.mem,
+            pct,
+          )}
+        >
           <Stat
-            label="GPU"
-            value={gpuPct}
+            label="Memory"
+            value={s.memPercent}
             unit="%"
             footer={
               <Stack gap={1}>
-                <ProgressBar value={gpuPct} tone="gpu" />
+                <ProgressBar value={s.memPercent} tone="ram" />
                 <Text variant="caption" color="secondary">
-                  {formatBytes(gpus[0].memUsed)} / {formatBytes(gpus[0].memTotal)}
+                  {formatBytes(s.memUsed)} / {formatBytes(s.memTotal)}
                 </Text>
               </Stack>
             }
           />
-        )}
-        <Stat
-          label="SSD"
-          value={s.sysDiskBusyPercent}
-          unit="%"
-          footer={
-            <Stack gap={1}>
-              <ProgressBar value={s.sysDiskBusyPercent} tone="ssd" />
-              <Text variant="caption" color="secondary">
-                ↓ {formatRate(s.sysDiskReadRate)} · ↑ {formatRate(s.sysDiskWriteRate)}
-              </Text>
-            </Stack>
-          }
-        />
-        <Stat
-          label="Network"
-          value={formatRate(s.netRxRate)}
-          footer={
-            <Text variant="caption" color="secondary">
-              ↑ {formatRate(s.netTxRate)}
-            </Text>
-          }
-        />
-      </Grid>
-
-      {/* Processor + GPU gauges */}
-      <Grid minItemWidth={hasGpu ? 320 : 480} gap={3}>
-        <Panel title="Processor" className="p-4">
-          <Stack direction="row" gap={4} align="center" wrap>
-            <Gauge value={s.cpuPercent} tone="cpu" sublabel="load" />
-            <Stack grow gap={2} className="min-w-[220px]">
-              <Grid minItemWidth={90} gap={2}>
-                {s.perCpu.map((p, i) => (
-                  <Stack key={i} gap={1}>
-                    <Text variant="caption" color="secondary">
-                      Core {i}
-                    </Text>
-                    <ProgressBar value={p} tone="cpu" />
-                  </Stack>
-                ))}
-              </Grid>
-            </Stack>
-          </Stack>
-        </Panel>
+        </HoverPanel>
 
         {hasGpu && (
-          <Panel title="Graphics" className="p-4">
-            <Stack direction="row" gap={4} align="center" wrap>
-              {gpus.map((g, i) => {
-                const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : '']
-                  .filter(Boolean)
-                  .join(' · ');
-                return (
-                  <Stack key={i} direction="row" gap={3} align="center">
-                    <Gauge value={g.utilPercent} tone="gpu" sublabel={`GPU ${g.index}`} />
-                    <Stack gap={1} className="min-w-[150px]">
-                      <Text variant="caption" color="secondary">
-                        VRAM
-                      </Text>
-                      <ProgressBar value={g.memPercent} tone="gpu" />
-                      <Text variant="caption" color="secondary">
-                        {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
-                      </Text>
-                      {tp && (
-                        <Text variant="caption" color="secondary">
-                          {tp}
-                        </Text>
-                      )}
-                    </Stack>
-                  </Stack>
-                );
-              })}
-            </Stack>
-          </Panel>
+          <HoverPanel block width={340} panel={gpuPanel}>
+            <Stat
+              label="GPU"
+              value={gpuPct}
+              unit="%"
+              footer={
+                <Stack gap={1}>
+                  <ProgressBar value={gpuPct} tone="gpu" />
+                  <Text variant="caption" color="secondary">
+                    {formatBytes(gpus[0].memUsed)} / {formatBytes(gpus[0].memTotal)}
+                  </Text>
+                </Stack>
+              }
+            />
+          </HoverPanel>
         )}
+
+        <HoverPanel
+          block
+          width={300}
+          panel={simplePanel(
+            C.ssd,
+            'System SSD',
+            <Text variant="caption" color="secondary">
+              {s.sysDiskBusyPercent}% active · ↓ {formatRate(s.sysDiskReadRate)} · ↑ {formatRate(s.sysDiskWriteRate)}
+            </Text>,
+            L.ssd,
+            pct,
+          )}
+        >
+          <Stat
+            label="SSD"
+            value={s.sysDiskBusyPercent}
+            unit="%"
+            footer={
+              <Stack gap={1}>
+                <ProgressBar value={s.sysDiskBusyPercent} tone="ssd" />
+                <Text variant="caption" color="secondary">
+                  ↓ {formatRate(s.sysDiskReadRate)} · ↑ {formatRate(s.sysDiskWriteRate)}
+                </Text>
+              </Stack>
+            }
+          />
+        </HoverPanel>
+
+        <HoverPanel
+          block
+          width={300}
+          panel={simplePanel(
+            C.net,
+            'Network',
+            <Text variant="caption" color="secondary">
+              ↓ {formatRate(s.netRxRate)} · ↑ {formatRate(s.netTxRate)}
+            </Text>,
+            L.net,
+            formatRate,
+          )}
+        >
+          <Stat
+            label="Network"
+            value={formatRate(s.netRxRate)}
+            footer={
+              <Text variant="caption" color="secondary">
+                ↑ {formatRate(s.netTxRate)}
+              </Text>
+            }
+          />
+        </HoverPanel>
       </Grid>
 
       {/* Combined history with legend */}
@@ -255,54 +304,38 @@ export function Performance({ api }: ServiceContextProps) {
         <Stack gap={2}>
           <Legend items={legend} />
           <LineChart series={combined} min={0} max={100} height={170} />
-          <Text variant="caption" color="tertiary">
-            CPU / Memory / GPU / SSD are % utilization; Network is scaled relative to the window peak.
-          </Text>
         </Stack>
       </Panel>
 
-      {/* Per-component detail graphs — hover any for its 1/5/15-min load average */}
+      {/* Per-component detail graphs */}
       <Grid minItemWidth={260} gap={3}>
-        <LoadHover title="CPU" color={C.cpu} avg={L.cpu} fmt={pct}>
-          <MiniChart label="CPU" color={C.cpu} percent caption={`${s.cpuPercent}%`} lines={[{ data: cpuSeries, color: C.cpu, fill: true }]} />
-        </LoadHover>
-        <LoadHover title="Memory" color={C.ram} avg={L.mem} fmt={pct}>
-          <MiniChart label="Memory" color={C.ram} percent caption={`${s.memPercent}%`} lines={[{ data: memSeries, color: C.ram, fill: true }]} />
-        </LoadHover>
-        {hasGpu && (
-          <LoadHover title="GPU" color={C.gpu} avg={L.gpu} fmt={pct}>
-            <MiniChart label="GPU" color={C.gpu} percent caption={`${gpuPct}%`} lines={[{ data: gpuSeries, color: C.gpu, fill: true }]} />
-          </LoadHover>
-        )}
-        <LoadHover title="SSD" color={C.ssd} avg={L.ssd} fmt={pct}>
-          <MiniChart
-            label="SSD"
-            color={C.ssd}
-            caption={`↓ ${formatRate(s.sysDiskReadRate)} · ↑ ${formatRate(s.sysDiskWriteRate)}`}
-            lines={[
-              { data: ssdReadSeries, color: C.ssd },
-              { data: ssdWriteSeries, color: C.ssdDim },
-            ]}
-          />
-        </LoadHover>
-        <LoadHover title="Network" color={C.net} avg={L.net} fmt={formatRate}>
-          <MiniChart
-            label="Network"
-            color={C.net}
-            caption={`↓ ${formatRate(s.netRxRate)} · ↑ ${formatRate(s.netTxRate)}`}
-            lines={[
-              { data: netRxSeries, color: C.net },
-              { data: netTxSeries, color: C.netDim },
-            ]}
-          />
-        </LoadHover>
+        <MiniChart label="CPU" color={C.cpu} percent caption={`${s.cpuPercent}%`} lines={[{ data: cpuSeries, color: C.cpu, fill: true }]} />
+        <MiniChart label="Memory" color={C.ram} percent caption={`${s.memPercent}%`} lines={[{ data: memSeries, color: C.ram, fill: true }]} />
+        {hasGpu && <MiniChart label="GPU" color={C.gpu} percent caption={`${gpuPct}%`} lines={[{ data: gpuSeries, color: C.gpu, fill: true }]} />}
+        <MiniChart
+          label="SSD"
+          color={C.ssd}
+          caption={`↓ ${formatRate(s.sysDiskReadRate)} · ↑ ${formatRate(s.sysDiskWriteRate)}`}
+          lines={[
+            { data: ssdReadSeries, color: C.ssd },
+            { data: ssdWriteSeries, color: C.ssdDim },
+          ]}
+        />
+        <MiniChart
+          label="Network"
+          color={C.net}
+          caption={`↓ ${formatRate(s.netRxRate)} · ↑ ${formatRate(s.netTxRate)}`}
+          lines={[
+            { data: netRxSeries, color: C.net },
+            { data: netTxSeries, color: C.netDim },
+          ]}
+        />
       </Grid>
 
-      {/* Uptime / process count (the system Load average panel is replaced by the
-          per-component hover averages above). */}
+      {/* Uptime / process count */}
       <Panel className="px-4 py-3">
         <Text variant="footnote" color="secondary">
-          Uptime {formatDuration(s.uptime)} · {s.procs} processes · hover a component above for its 1 / 5 / 15-min load average
+          Uptime {formatDuration(s.uptime)} · {s.procs} processes
         </Text>
       </Panel>
     </Stack>

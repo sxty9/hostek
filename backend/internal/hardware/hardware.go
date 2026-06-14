@@ -152,10 +152,12 @@ type gpuDynamic struct {
 // Collector caches a static hardware probe (~10 min) and live dynamic values
 // (~2 s) behind a single RWMutex. Get() only reads caches; it never shells out.
 type Collector struct {
-	mu    sync.RWMutex
-	st    Info                 // static probe
-	dyn   dynamic              // live values, merged into Get()
-	smart map[string]SmartData // per-disk SMART (keyed by base name), ~30s refresh
+	mu        sync.RWMutex
+	st        Info                 // static probe
+	dyn       dynamic              // live values, merged into Get()
+	smart     map[string]SmartData // per-disk SMART (keyed by base name), ~30s refresh
+	thermCrit []ThermalMeta        // temperature-measurable components + critical limits
+	thermRing []ThermalSample      // temperature time-series (~6 min)
 }
 
 // New returns an idle collector. Call Start to begin background probing.
@@ -249,6 +251,13 @@ func (c *Collector) probeStatic() {
 	c.mu.Lock()
 	c.st = info
 	c.mu.Unlock()
+
+	// Temperature-measurable components + critical limits (uses the just-published
+	// static info plus nvidia-smi/lsblk; no Collector lock needed during the probe).
+	meta := computeThermalMeta(info)
+	c.mu.Lock()
+	c.thermCrit = meta
+	c.mu.Unlock()
 }
 
 // probeDynamic samples the cheap live values.
@@ -265,8 +274,10 @@ func (c *Collector) probeDynamic() {
 	d.cpuTemp = readCPUTemp()
 	d.gpu = readGPUDynamic()
 
+	now := time.Now().UnixMilli()
 	c.mu.Lock()
 	c.dyn = d
+	c.appendThermalLocked(now, d)
 	c.mu.Unlock()
 }
 

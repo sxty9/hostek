@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   DataTable,
@@ -36,24 +36,47 @@ function shortName(name: string): string {
   return name.length > 18 ? name.slice(0, 17) + '…' : name;
 }
 
+interface StreamState {
+  colorByPid: Map<number, string>;
+  order: number[];
+  count: number;
+}
+
 // buildStreams stacks the top-N processes' contribution to a metric over the history
-// window (plus an aggregated "Other"), returning series + a matching legend.
-function buildStreams(history: Process[][], get: (p: Process) => number): { series: StreamSeries[]; legend: { label: string; color: string }[] } {
+// window (plus an aggregated "Other"). It persists per-PID color and a first-seen stack
+// order in `st`, so a process keeps the same color and layer even after it dips into
+// "Other" and reappears (instead of being re-colored/re-ordered each frame).
+function buildStreams(
+  history: Process[][],
+  get: (p: Process) => number,
+  st: StreamState,
+): { series: StreamSeries[]; legend: { label: string; color: string }[] } {
   if (history.length === 0) return { series: [], legend: [] };
   const latest = history[history.length - 1];
   const ranked = latest.filter((p) => get(p) > 0).sort((a, b) => get(b) - get(a)).slice(0, TOP_N);
   if (ranked.length === 0) return { series: [], legend: [] };
 
+  for (const p of ranked) {
+    if (!st.colorByPid.has(p.pid)) {
+      st.colorByPid.set(p.pid, PALETTE[st.count % PALETTE.length]);
+      st.count += 1;
+    }
+    if (!st.order.includes(p.pid)) st.order.push(p.pid);
+  }
+
   const topPids = new Set(ranked.map((p) => p.pid));
+  const nameByPid = new Map(ranked.map((p) => [p.pid, shortName(p.name)]));
   const maps = history.map((frame) => {
     const m = new Map<number, Process>();
     for (const p of frame) m.set(p.pid, p);
     return m;
   });
 
-  const series: StreamSeries[] = ranked.map((p, i) => ({
-    label: shortName(p.name),
-    color: PALETTE[i % PALETTE.length],
+  // Stable stack order: lay the shown PIDs out by their first-seen position.
+  const shown = [...ranked].sort((a, b) => st.order.indexOf(a.pid) - st.order.indexOf(b.pid));
+  const series: StreamSeries[] = shown.map((p) => ({
+    label: nameByPid.get(p.pid) ?? String(p.pid),
+    color: st.colorByPid.get(p.pid) ?? OTHER_COLOR,
     data: maps.map((m) => {
       const x = m.get(p.pid);
       return x ? get(x) : 0;
@@ -78,13 +101,15 @@ function buildStreams(history: Process[][], get: (p: Process) => number): { seri
 // ColumnHover wraps a sortable column header so hovering it reveals a stream graph of
 // the top processes for that metric (and stays open while the pointer is over it). The
 // stream is built lazily — only while the panel is actually open — to keep the live
-// table render cheap (HoverPanel evaluates the panel function only when shown).
+// table render cheap (HoverPanel evaluates the panel function only when shown). The
+// per-column StreamState ref keeps process colors/order stable across frames.
 function ColumnHover({ label, history, get }: { label: string; history: Process[][]; get: (p: Process) => number }) {
+  const stateRef = useRef<StreamState>({ colorByPid: new Map(), order: [], count: 0 });
   return (
     <HoverPanel
       width={360}
       panel={() => {
-        const { series, legend } = buildStreams(history, get);
+        const { series, legend } = buildStreams(history, get, stateRef.current);
         return (
           <Stack gap={2}>
             <Text variant="caption" weight="semibold">
