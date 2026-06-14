@@ -23,11 +23,12 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
   bleibt im System-Tab sichtbar). Feinere Rechte (Backing-Gruppe) werden per `privleg` an Nicht-Admins
   vergeben — der Daemon **und** die UI erzwingen `isAdmin || group ∈ user.groups` und redigieren
   gesperrte Werte:
-  - `hp_hostek_thermal` — Temperaturen (CPU/GPU/Disk) + **Thermal**-Tab
-  - `hp_hostek_powerinfo` — Power-Telemetrie (Watt) + **Power**-Tab
+  - `hp_hostek_powerinfo` — Energieinformationen (Watt) + **Power**-Tab
+  - `hp_hostek_thermal` — Thermalinformationen (CPU/GPU/Disk) + **Thermal**-Tab
+  - `hp_hostek_techinfo` — Technische Informationen (Betriebsstunden, Firmware, Treiber)
+  - `hp_hostek_hwdetail` — Identitätsinformationen *(sensibel)*: Seriennummern, MAC-Adressen
   - `hp_hostek_disks` — der **Disks**-Tab (alle Datenträger)
   - `hp_hostek_proc` — Prozessliste + **Processes**-Tab
-  - `hp_hostek_hwdetail` — Detail-/Identifikationsfelder (Serial, MAC, Firmware, Treiber, Betriebsstunden)
   - `hp_hostek_power` — OS-Energie/Headless **ändern** + **Config**-Tab (dangerous)
 - **Least privilege:** Der Daemon läuft als unprivilegierter User `hostek`; Config-Schreib-
   zugriffe gehen ausschließlich über den schmalen sudo-Wrapper `hostek-power-set`.
@@ -76,8 +77,8 @@ Weitere Kommandos: `hostek build` (nur Daemon neu bauen), `hostek start|stop|res
 | GET | `summary` | alle | Aggregat (CPU/RAM/GPU/SSD-I/O/Netz/Load); GPU-Temp/-Power je nach Recht redigiert |
 | GET | `metrics` | alle | Zeitreihen (Ring-Buffer): CPU/RAM/GPU %, SSD read/write/busy, Netz |
 | GET | `host` | alle | statische Host-Infos |
-| GET | `hardware` | alle | Hardware-Inventar (Temp `thermal`, GPU-Power `powerinfo`, Serial/MAC/Firmware/Treiber `hwdetail`) |
-| GET | `disks` | `disks` | alle Datenträger (Temp `thermal`, Serial/Firmware/Betriebsstunden `hwdetail`) |
+| GET | `hardware` | alle | Hardware-Inventar (Temp `thermal`, GPU-Power `powerinfo`, Firmware/Treiber `techinfo`, Serial/MAC `hwdetail`) |
+| GET | `disks` | `disks` | alle Datenträger (Temp `thermal`, Firmware/Betriebsstunden `techinfo`, Serial `hwdetail`) |
 | GET | `power` | `powerinfo` | Power-Telemetrie (CPU/GPU/Total Watt + 1/5/15-Mittel) |
 | GET | `thermal` | `thermal` | Temperatur-Zeitreihen + kritische Schwellen |
 | GET | `processes` | `proc` | Prozessliste (PID, CPU%, RAM, GPU%/Engine, Netz, Status) |

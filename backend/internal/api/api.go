@@ -25,10 +25,11 @@ const base = "/api/services/hostek/"
 const (
 	permPower     = "hp_hostek_power"     // change OS power + headless config (dangerous)
 	permProc      = "hp_hostek_proc"      // see the per-process breakdown
-	permHWDetail  = "hp_hostek_hwdetail"  // see identifying hardware fields (serial, MAC)
-	permThermal   = "hp_hostek_thermal"   // see temperature info + the Thermal tab
-	permPowerInfo = "hp_hostek_powerinfo" // see power telemetry + the Power tab
-	permDisks     = "hp_hostek_disks"     // see disks beyond the system disk
+	permIdentity  = "hp_hostek_hwdetail"  // sensitive identity fields (serial, MAC)
+	permTechInfo  = "hp_hostek_techinfo"  // technical fields (power-on hours, firmware, driver)
+	permThermal   = "hp_hostek_thermal"   // temperature info + the Thermal tab
+	permPowerInfo = "hp_hostek_powerinfo" // power telemetry + the Power tab
+	permDisks     = "hp_hostek_disks"     // the Disks tab (all disks)
 )
 
 // Server wires the verifier and collectors into HTTP handlers.
@@ -121,12 +122,14 @@ func (s *Server) thermal(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 	writeJSON(w, http.StatusOK, s.hw.Thermal())
 }
 
-// hardware serves the System tab's component inventory. Available to everyone, but
-// identifying fields (serial, MAC) need hwdetail, temperatures need thermal, and GPU
-// power needs powerinfo. Slices are copied before redacting so the cache stays intact.
+// hardware serves the System tab's component inventory. Available to everyone, but each
+// class of field is gated: temperatures (thermal), GPU power (powerinfo), technical fields
+// — firmware/driver/power-on hours — (techinfo), and sensitive identity — serial/MAC —
+// (hwdetail). Slices are copied before redacting so the cache stays intact.
 func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	info := s.hw.Get()
-	canHW := u.Can(permHWDetail)
+	canIdentity := u.Can(permIdentity)
+	canTech := u.Can(permTechInfo)
 	canTherm := u.Can(permThermal)
 	canPwr := u.Can(permPowerInfo)
 
@@ -134,10 +137,13 @@ func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) 
 		info.CPU.TempC = 0
 		info.Disk.TempC = 0
 	}
-	if !canHW {
-		info.Disk.Serial, info.Disk.Firmware, info.Disk.PowerOnHours = "", "", 0
+	if !canIdentity {
+		info.Disk.Serial = ""
 	}
-	if (!canTherm || !canPwr || !canHW) && len(info.GPUs) > 0 {
+	if !canTech {
+		info.Disk.Firmware, info.Disk.PowerOnHours = "", 0
+	}
+	if (!canTherm || !canPwr || !canTech) && len(info.GPUs) > 0 {
 		info.GPUs = append([]hardware.GPUInfo(nil), info.GPUs...)
 		for i := range info.GPUs {
 			if !canTherm {
@@ -146,29 +152,38 @@ func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) 
 			if !canPwr {
 				info.GPUs[i].PowerW, info.GPUs[i].PowerLimitW = 0, 0
 			}
-			if !canHW {
+			if !canTech {
 				info.GPUs[i].Driver = ""
 			}
 		}
 	}
-	if !canHW && len(info.NICs) > 0 {
+	if (!canIdentity || !canTech) && len(info.NICs) > 0 {
 		info.NICs = append([]hardware.NICInfo(nil), info.NICs...)
 		for i := range info.NICs {
-			info.NICs[i].MAC, info.NICs[i].Driver = "", ""
+			if !canIdentity {
+				info.NICs[i].MAC = ""
+			}
+			if !canTech {
+				info.NICs[i].Driver = ""
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, info)
 }
 
-// disks serves the Disks tab (gated by the disks right). Identifying/detail fields need
-// hwdetail; temperatures need thermal.
+// disks serves the Disks tab (gated by the disks right). Serial needs hwdetail (identity),
+// firmware/power-on hours need techinfo, temperatures need thermal.
 func (s *Server) disks(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	ds := s.hw.Disks() // freshly built each call, safe to mutate in place
-	canHW := u.Can(permHWDetail)
+	canIdentity := u.Can(permIdentity)
+	canTech := u.Can(permTechInfo)
 	canTherm := u.Can(permThermal)
 	for i := range ds {
-		if !canHW {
-			ds[i].Serial, ds[i].Firmware, ds[i].PowerOnHours = "", "", 0
+		if !canIdentity {
+			ds[i].Serial = ""
+		}
+		if !canTech {
+			ds[i].Firmware, ds[i].PowerOnHours = "", 0
 		}
 		if !canTherm {
 			ds[i].TempC = 0

@@ -312,24 +312,31 @@ write_permissions() {
           "default": false
         },
         {
-          "id": "hwdetail",
-          "label": "Hardware-Details",
-          "description": "Detail-/Identifikationsfelder sehen (Seriennummern, MAC, Firmware, Treiber, Betriebsstunden).",
-          "group": "hp_hostek_hwdetail",
+          "id": "powerinfo",
+          "label": "Energieinformationen",
+          "description": "Stromverbrauch (Watt) der Komponenten und den Power-Tab einsehen.",
+          "group": "hp_hostek_powerinfo",
           "default": false
         },
         {
           "id": "thermal",
-          "label": "Temperaturen",
-          "description": "Temperaturwerte und den Thermal-Tab einsehen (CPU, GPU, Datenträger).",
+          "label": "Thermalinformationen",
+          "description": "Temperaturwerte (CPU, GPU, Datenträger) und den Thermal-Tab einsehen.",
           "group": "hp_hostek_thermal",
           "default": false
         },
         {
-          "id": "powerinfo",
-          "label": "Power-Telemetrie",
-          "description": "Stromverbrauch (Watt) der Komponenten und den Power-Tab einsehen.",
-          "group": "hp_hostek_powerinfo",
+          "id": "techinfo",
+          "label": "Technische Informationen",
+          "description": "Betriebsstunden, Firmware und Treiber einsehen.",
+          "group": "hp_hostek_techinfo",
+          "default": false
+        },
+        {
+          "id": "hwdetail",
+          "label": "Identitätsinformationen (sensibel)",
+          "description": "Sensible Identifikatoren einsehen: Seriennummern und MAC-Adressen.",
+          "group": "hp_hostek_hwdetail",
           "default": false
         },
         {
@@ -346,7 +353,7 @@ write_permissions() {
 JSON
   chmod 0644 "$PERMS_FILE"
   local g
-  for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks; do
+  for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_techinfo hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks; do
     groupadd -f "$g"
   done
 }
@@ -512,7 +519,7 @@ cmd_uninstall() {
     userdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     groupdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     local g
-    for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks; do
+    for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_techinfo hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks; do
       groupdel "$g" >/dev/null 2>&1 || true
     done
     rm -rf "$HOSTEK_APP" /etc/hostek /var/lib/hostek
