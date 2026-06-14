@@ -197,7 +197,7 @@ export function Performance({ api }: ServiceContextProps) {
       {/* Top stat tiles — hover any for its detail + 1/5/15-min average */}
       <Grid minItemWidth={220} gap={3}>
         <HoverPanel block width={380} panel={cpuPanel}>
-          <Stat label="CPU" value={s.cpuPercent} unit="%" footer={<ProgressBar value={s.cpuPercent} tone="cpu" />} />
+          <Stat className="h-full" label="CPU" value={s.cpuPercent} unit="%" footer={<ProgressBar value={s.cpuPercent} tone="cpu" />} />
         </HoverPanel>
 
         <HoverPanel
@@ -214,6 +214,7 @@ export function Performance({ api }: ServiceContextProps) {
           )}
         >
           <Stat
+            className="h-full"
             label="Memory"
             value={s.memPercent}
             unit="%"
@@ -231,6 +232,7 @@ export function Performance({ api }: ServiceContextProps) {
         {hasGpu && (
           <HoverPanel block width={340} panel={gpuPanel}>
             <Stat
+              className="h-full"
               label="GPU"
               value={gpuPct}
               unit="%"
@@ -260,6 +262,7 @@ export function Performance({ api }: ServiceContextProps) {
           )}
         >
           <Stat
+            className="h-full"
             label="SSD"
             value={s.sysDiskBusyPercent}
             unit="%"
@@ -288,6 +291,7 @@ export function Performance({ api }: ServiceContextProps) {
           )}
         >
           <Stat
+            className="h-full"
             label="Network"
             value={formatRate(s.netRxRate)}
             footer={
