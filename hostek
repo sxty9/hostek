@@ -327,7 +327,7 @@ write_permissions() {
         },
         {
           "id": "techinfo",
-          "label": "Technische Informationen",
+          "label": "Software-Informationen",
           "description": "Betriebsstunden, Firmware und Treiber einsehen.",
           "group": "hp_hostek_techinfo",
           "default": false

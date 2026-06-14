@@ -25,7 +25,7 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
   gesperrte Werte:
   - `hp_hostek_powerinfo` — Energieinformationen (Watt) + **Power**-Tab
   - `hp_hostek_thermal` — Thermalinformationen (CPU/GPU/Disk) + **Thermal**-Tab
-  - `hp_hostek_techinfo` — Technische Informationen (Betriebsstunden, Firmware, Treiber)
+  - `hp_hostek_techinfo` — Software-Informationen (Betriebsstunden, Firmware, Treiber)
   - `hp_hostek_hwdetail` — Identitätsinformationen *(sensibel)*: Seriennummern, MAC-Adressen
   - `hp_hostek_disks` — der **Disks**-Tab (alle Datenträger)
   - `hp_hostek_proc` — Prozessliste + **Processes**-Tab
