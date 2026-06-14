@@ -1,7 +1,0 @@
-# hostek — routes the service API to the hostek Go daemon.
-# Installed to /etc/caddy/conf.d/hostek.caddy and imported by holistic's Caddyfile.
-# Caddy matches this more-specific path (/api/services/hostek/*) before the generic
-# /api/* handler regardless of import order, so it wins.
-handle /api/services/hostek/* {
-	reverse_proxy 127.0.0.1:8771
-}

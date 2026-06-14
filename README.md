@@ -32,8 +32,8 @@ backend/        Go-Daemon (hostekd)
   internal/sysconfig/ read/apply headless power settings
   internal/api/     HTTP routes under /api/services/hostek/
 ui/             @holistic/ui plugin (linked into holistic/frontend/external/hostek)
-deploy/         systemd unit, Caddy route, sudo wrapper + sudoers drop-in
-install.sh      idempotent installer (root)
+hostek          single-file CLI: setup/build/lifecycle. Generates the systemd unit,
+                Caddy route, sudoers drop-in + privileged power wrapper inline (no deploy/ tree).
 ```
 
 ## Install
@@ -42,11 +42,15 @@ Voraussetzung: das **holistic**-Repo (mit externer-Plugin- + Caddy-import-Unters
 ist vorhanden und das Dashboard installiert.
 
 ```bash
-sudo HOLISTIC_REPO=/code/holistic ./install.sh
+sudo ./hostek setup        # HOLISTIC_REPO wird autodetektiert (../holistic, /code/holistic, …)
 ```
 
-Danach erscheint **„System"** in der holistic-Sidebar (Admins zusätzlich mit *Processes* und
-*Config*). `holistic update` baut die SPA neu; hostek bleibt verlinkt.
+`setup` baut den Daemon, verdrahtet systemd + sudo + Caddy, verlinkt das UI-Plugin und baut
+die Dashboard-SPA neu. Danach erscheint **„System"** in der holistic-Sidebar (Admins zusätzlich
+mit *Processes* und *Config*). `holistic update` baut die SPA neu; hostek bleibt verlinkt.
+
+Weitere Kommandos: `hostek build` (nur Daemon neu bauen), `hostek start|stop|restart`,
+`hostek status`, `hostek power on|off`, `hostek update`, `hostek uninstall [--purge]`.
 
 ## API (`/api/services/hostek/`)
 
