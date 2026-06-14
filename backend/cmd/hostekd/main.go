@@ -21,6 +21,7 @@ import (
 	"hostek/internal/hardware"
 	"hostek/internal/metrics"
 	"hostek/internal/netmon"
+	"hostek/internal/powermon"
 )
 
 func main() {
@@ -40,10 +41,12 @@ func main() {
 	gpuS.Start()
 	netS := netmon.New()
 	netS.Start()
+	pwrS := powermon.New()
+	pwrS.Start()
 	hw := hardware.New()
 	hw.Start()
 
-	col := metrics.New(*interval, gpuS, netS)
+	col := metrics.New(*interval, gpuS, netS, pwrS)
 	col.Start()
 
 	srv := &http.Server{

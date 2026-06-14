@@ -22,16 +22,21 @@ type DiskPartition struct {
 
 // DiskDevice is a whole physical disk and its partitions (for the Disks tab).
 type DiskDevice struct {
-	Name       string          `json:"name"` // "nvme0n1", "sda"
-	Model      string          `json:"model,omitempty"`
-	Serial     string          `json:"serial,omitempty"`
-	Transport  string          `json:"transport,omitempty"` // "nvme"/"sata"/"usb"
-	Port       string          `json:"port,omitempty"`      // friendly, e.g. "SATA Port 3" / "NVMe"
-	SizeBytes  uint64          `json:"sizeBytes"`
-	Rotational bool            `json:"rotational"`
-	Type       string          `json:"type,omitempty"` // "NVMe"/"SSD"/"HDD"
-	IsSystem   bool            `json:"isSystem"`
-	Partitions []DiskPartition `json:"partitions,omitempty"`
+	Name       string `json:"name"` // "nvme0n1", "sda"
+	Model      string `json:"model,omitempty"`
+	Serial     string `json:"serial,omitempty"`
+	Transport  string `json:"transport,omitempty"` // "nvme"/"sata"/"usb"
+	Port       string `json:"port,omitempty"`      // friendly, e.g. "SATA Port 3" / "NVMe"
+	SizeBytes  uint64 `json:"sizeBytes"`
+	Rotational bool   `json:"rotational"`
+	Type       string `json:"type,omitempty"` // "NVMe"/"SSD"/"HDD"
+	IsSystem   bool   `json:"isSystem"`
+	// SMART (best-effort, from the ~30s cache) — symmetric with the System-tab disk card.
+	Health       string          `json:"health,omitempty"`
+	TempC        float64         `json:"tempC,omitempty"`
+	Firmware     string          `json:"firmware,omitempty"`
+	PowerOnHours int             `json:"powerOnHours,omitempty"`
+	Partitions   []DiskPartition `json:"partitions,omitempty"`
 }
 
 // lsblkNode mirrors the subset of `lsblk -J` fields we consume; children are the
@@ -113,6 +118,10 @@ func (c *Collector) Disks() []DiskDevice {
 	}
 
 	root := diskutil.RootDevice() // whole-disk name backing "/"
+	c.mu.RLock()
+	smart := c.smart // copy-on-write snapshot; safe to read after unlock
+	c.mu.RUnlock()
+
 	var devices []DiskDevice
 	for _, n := range doc.Blockdevices {
 		// Only real whole disks — skip loop/rom/ram pseudo-devices.
@@ -130,12 +139,36 @@ func (c *Collector) Disks() []DiskDevice {
 			Port:       portLabel(n.Tran, n.Name),
 			IsSystem:   root != "" && n.Name == root,
 		}
+		if sd, ok := smart[n.Name]; ok {
+			d.Health, d.TempC, d.Firmware, d.PowerOnHours = sd.Health, sd.TempC, sd.Firmware, sd.PowerOnHours
+		}
 		for _, ch := range n.Children {
 			d.Partitions = append(d.Partitions, partition(ch))
 		}
 		devices = append(devices, d)
 	}
 	return devices
+}
+
+// wholeDiskNames lists the base names of every whole physical disk (type "disk").
+func wholeDiskNames() []string {
+	out, ok := runCmd(cmdTimeout, "lsblk", "-J", "-d", "-o", "NAME,TYPE")
+	if !ok {
+		return nil
+	}
+	var doc struct {
+		Blockdevices []lsblkNode `json:"blockdevices"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		return nil
+	}
+	var names []string
+	for _, n := range doc.Blockdevices {
+		if n.Type == "disk" {
+			names = append(names, n.Name)
+		}
+	}
+	return names
 }
 
 // partition builds a DiskPartition, filling live usage when the partition is

@@ -32,6 +32,7 @@ const hwinfoWrapper = "/usr/local/sbin/hostek-hwinfo"
 const (
 	staticInterval  = 10 * time.Minute
 	dynamicInterval = 2 * time.Second
+	smartInterval   = 30 * time.Second
 	cmdTimeout      = 3 * time.Second
 )
 
@@ -151,9 +152,10 @@ type gpuDynamic struct {
 // Collector caches a static hardware probe (~10 min) and live dynamic values
 // (~2 s) behind a single RWMutex. Get() only reads caches; it never shells out.
 type Collector struct {
-	mu  sync.RWMutex
-	st  Info    // static probe
-	dyn dynamic // live values, merged into Get()
+	mu    sync.RWMutex
+	st    Info                 // static probe
+	dyn   dynamic              // live values, merged into Get()
+	smart map[string]SmartData // per-disk SMART (keyed by base name), ~30s refresh
 }
 
 // New returns an idle collector. Call Start to begin background probing.
@@ -164,6 +166,7 @@ func New() *Collector { return &Collector{} }
 func (c *Collector) Start() {
 	c.probeStatic()
 	c.probeDynamic()
+	c.probeSmart()
 	go func() {
 		t := time.NewTicker(staticInterval)
 		defer t.Stop()
@@ -178,6 +181,26 @@ func (c *Collector) Start() {
 			c.probeDynamic()
 		}
 	}()
+	go func() {
+		t := time.NewTicker(smartInterval)
+		defer t.Stop()
+		for range t.C {
+			c.probeSmart()
+		}
+	}()
+}
+
+// probeSmart refreshes the SMART cache for every whole disk via the privileged wrapper.
+func (c *Collector) probeSmart() {
+	m := map[string]SmartData{}
+	for _, name := range wholeDiskNames() {
+		if out, ok := sudoHwinfo(cmdTimeout, "smart", "/dev/"+name); ok {
+			m[name] = parseSmartData(out)
+		}
+	}
+	c.mu.Lock()
+	c.smart = m
+	c.mu.Unlock()
 }
 
 // Get returns the cached static Info with the cached dynamic fields merged in.
@@ -671,29 +694,44 @@ var (
 	smartTempCurRe = regexp.MustCompile(`(?mi)^Current Drive Temperature:\s*(\d+)`)
 )
 
-func parseSMART(out string, d *DiskHWInfo) {
+// SmartData is the SMART subset surfaced for any disk (ATA + NVMe output handled).
+type SmartData struct {
+	Health       string
+	TempC        float64
+	Firmware     string
+	PowerOnHours int
+}
+
+func parseSmartData(out string) SmartData {
+	var sd SmartData
 	if m := smartFirmwareRe.FindStringSubmatch(out); m != nil {
-		d.Firmware = strings.TrimSpace(m[1])
+		sd.Firmware = strings.TrimSpace(m[1])
 	}
 	if m := smartHealthRe.FindStringSubmatch(out); m != nil {
-		d.Health = strings.TrimSpace(m[1])
+		sd.Health = strings.TrimSpace(m[1])
 	} else if m := smartHealthNVMe.FindStringSubmatch(out); m != nil {
-		d.Health = strings.TrimSpace(m[1])
+		sd.Health = strings.TrimSpace(m[1])
 	}
 	switch {
 	case smartPOHAttr.MatchString(out):
-		d.PowerOnHours = atoi(smartPOHAttr.FindStringSubmatch(out)[1])
+		sd.PowerOnHours = atoi(smartPOHAttr.FindStringSubmatch(out)[1])
 	case smartPOHNVMe.MatchString(out):
-		d.PowerOnHours = atoi(strings.ReplaceAll(smartPOHNVMe.FindStringSubmatch(out)[1], ",", ""))
+		sd.PowerOnHours = atoi(strings.ReplaceAll(smartPOHNVMe.FindStringSubmatch(out)[1], ",", ""))
 	}
 	switch {
 	case smartTempNVMe.MatchString(out):
-		d.TempC = atof(smartTempNVMe.FindStringSubmatch(out)[1])
+		sd.TempC = atof(smartTempNVMe.FindStringSubmatch(out)[1])
 	case smartTempCurRe.MatchString(out):
-		d.TempC = atof(smartTempCurRe.FindStringSubmatch(out)[1])
+		sd.TempC = atof(smartTempCurRe.FindStringSubmatch(out)[1])
 	case smartTempAttr.MatchString(out):
-		d.TempC = atof(smartTempAttr.FindStringSubmatch(out)[1])
+		sd.TempC = atof(smartTempAttr.FindStringSubmatch(out)[1])
 	}
+	return sd
+}
+
+func parseSMART(out string, d *DiskHWInfo) {
+	sd := parseSmartData(out)
+	d.Firmware, d.Health, d.TempC, d.PowerOnHours = sd.Firmware, sd.Health, sd.TempC, sd.PowerOnHours
 }
 
 // --- NICs --------------------------------------------------------------------

@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+base+"summary", s.guard("", false, s.summary))
 	mux.HandleFunc("GET "+base+"metrics", s.guard("", false, s.series))
+	mux.HandleFunc("GET "+base+"power", s.guard("", false, s.power))
 	mux.HandleFunc("GET "+base+"host", s.guard("", false, s.host))
 	mux.HandleFunc("GET "+base+"hardware", s.guard("", false, s.hardware))
 	mux.HandleFunc("GET "+base+"disks", s.guard("", false, s.disks))
@@ -89,6 +90,11 @@ func (s *Server) series(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 
 func (s *Server) host(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 	writeJSON(w, http.StatusOK, s.c.Host())
+}
+
+// power serves the Power tab's per-component power series + 1/5/15-min averages.
+func (s *Server) power(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
+	writeJSON(w, http.StatusOK, s.c.Power())
 }
 
 // hardware serves the System tab's component inventory. Available to everyone, but

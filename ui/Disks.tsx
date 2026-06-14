@@ -102,6 +102,50 @@ function DiskCard({ d }: { d: DiskDevice }) {
           </Stack>
         </Stack>
 
+        {/* SMART (symmetric with the System-tab disk card) */}
+        {(d.health || d.tempC || d.firmware || d.powerOnHours) && (
+          <Stack gap={1} className="border-t border-separator pt-2">
+            {d.health && (
+              <Stack direction="row" justify="between" gap={2} align="baseline">
+                <Text variant="footnote" color="secondary">
+                  Health
+                </Text>
+                <Badge variant={d.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{d.health}</Badge>
+              </Stack>
+            )}
+            {d.tempC ? (
+              <Stack direction="row" justify="between" gap={2} align="baseline">
+                <Text variant="footnote" color="secondary">
+                  Temperature
+                </Text>
+                <Text variant="footnote" className="tabular-nums">
+                  {Math.round(d.tempC)} °C
+                </Text>
+              </Stack>
+            ) : null}
+            {d.firmware && (
+              <Stack direction="row" justify="between" gap={2} align="baseline">
+                <Text variant="footnote" color="secondary">
+                  Firmware
+                </Text>
+                <Text variant="footnote" className="tabular-nums">
+                  {d.firmware}
+                </Text>
+              </Stack>
+            )}
+            {d.powerOnHours ? (
+              <Stack direction="row" justify="between" gap={2} align="baseline">
+                <Text variant="footnote" color="secondary">
+                  Power-on hours
+                </Text>
+                <Text variant="footnote" className="tabular-nums">
+                  {d.powerOnHours.toLocaleString()}
+                </Text>
+              </Stack>
+            ) : null}
+          </Stack>
+        )}
+
         {/* Mounted partitions */}
         {mounts.length > 0 && (
           <Stack gap={1} className="border-t border-separator pt-2">

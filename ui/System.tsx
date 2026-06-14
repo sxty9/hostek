@@ -27,7 +27,6 @@ function mhz(v?: number): string | undefined {
   if (!v || v <= 0) return undefined;
   return v >= 1000 ? `${(v / 1000).toFixed(2)} GHz` : `${Math.round(v)} MHz`;
 }
-const watts = (v?: number) => (v && v > 0 ? `${Math.round(v)} W` : undefined);
 const degC = (v?: number) => (v && v > 0 ? `${Math.round(v)} °C` : undefined);
 const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ') || undefined;
 
@@ -158,7 +157,6 @@ export function System({ api }: ServiceContextProps) {
           <Spec label="Current clock" value={mhz(g.curClockMhz)} />
           <Spec label="Memory clock" value={mhz(g.memClockMhz || g.memMaxClockMhz)} />
           <Spec label="Temperature" value={degC(g.tempC)} />
-          <Spec label="Power" value={join(watts(g.powerW), g.powerLimitW ? `limit ${watts(g.powerLimitW)}` : undefined)} />
         </CompCard>
       ))}
 

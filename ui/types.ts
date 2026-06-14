@@ -20,6 +20,20 @@ export interface GPU {
   powerW: number;
 }
 
+// Value averaged over 1/5/15 min (EWMA), the per-component analogue of load average.
+export interface Avg {
+  a1: number;
+  a5: number;
+  a15: number;
+}
+export interface Loads {
+  cpu: Avg;
+  mem: Avg;
+  gpu: Avg;
+  ssd: Avg;
+  net: Avg;
+}
+
 export interface Summary {
   time: number;
   cpuPercent: number;
@@ -43,8 +57,27 @@ export interface Summary {
   load1: number;
   load5: number;
   load15: number;
+  loads: Loads;
   uptime: number;
   procs: number;
+}
+
+export interface PowerSample {
+  time: number;
+  cpu: number;
+  gpu: number;
+  total: number;
+}
+export interface PowerAvg {
+  cpu: Avg;
+  gpu: Avg;
+  total: Avg;
+}
+export interface PowerResponse {
+  samples: PowerSample[];
+  avg: PowerAvg;
+  cpuAvailable: boolean;
+  gpuAvailable: boolean;
 }
 
 export interface Sample {
@@ -205,6 +238,10 @@ export interface DiskDevice {
   rotational: boolean;
   type?: string;
   isSystem: boolean;
+  health?: string;
+  tempC?: number;
+  firmware?: string;
+  powerOnHours?: number;
   partitions?: DiskPartition[];
 }
 export interface DisksResponse {

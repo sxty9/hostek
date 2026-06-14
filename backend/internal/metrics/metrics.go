@@ -12,6 +12,7 @@ import (
 	"hostek/internal/diskutil"
 	"hostek/internal/gpu"
 	"hostek/internal/netmon"
+	"hostek/internal/powermon"
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
@@ -58,9 +59,73 @@ type Summary struct {
 	Load1              float64 `json:"load1"`
 	Load5              float64 `json:"load5"`
 	Load15             float64 `json:"load15"`
-	Uptime             uint64  `json:"uptime"`
-	Procs              int     `json:"procs"`
+	// Per-component utilization averages (kernel-style EWMA over 1/5/15 min) — the
+	// per-component analogue of the system load average, shown on hover.
+	Loads  Loads  `json:"loads"`
+	Uptime uint64 `json:"uptime"`
+	Procs  int    `json:"procs"`
 }
+
+// Avg holds a value averaged over 1, 5 and 15 minutes (EWMA).
+type Avg struct {
+	A1  float64 `json:"a1"`
+	A5  float64 `json:"a5"`
+	A15 float64 `json:"a15"`
+}
+
+// Loads is the per-component utilization average (CPU/Mem/GPU = %, SSD = active-time %,
+// Net = bytes/sec).
+type Loads struct {
+	CPU Avg `json:"cpu"`
+	Mem Avg `json:"mem"`
+	GPU Avg `json:"gpu"`
+	SSD Avg `json:"ssd"`
+	Net Avg `json:"net"`
+}
+
+// PowerSample is one point of the per-component power time-series (watts).
+type PowerSample struct {
+	Time  int64   `json:"time"`
+	CPU   float64 `json:"cpu"`
+	GPU   float64 `json:"gpu"`
+	Total float64 `json:"total"`
+}
+
+// PowerResponse is the Power tab payload: the recent series plus 1/5/15-min averages
+// and which sources are actually reporting.
+type PowerResponse struct {
+	Samples      []PowerSample `json:"samples"`
+	Avg          PowerAvg      `json:"avg"`
+	CPUAvailable bool          `json:"cpuAvailable"`
+	GPUAvailable bool          `json:"gpuAvailable"`
+}
+
+// PowerAvg holds the 1/5/15-min EWMA power for each component (watts).
+type PowerAvg struct {
+	CPU   Avg `json:"cpu"`
+	GPU   Avg `json:"gpu"`
+	Total Avg `json:"total"`
+}
+
+// ewma3 maintains a value's exponentially-weighted moving average over 1/5/15 min,
+// the same scheme the kernel uses for the load average.
+type ewma3 struct {
+	a1, a5, a15 float64
+	primed      bool
+}
+
+func (e *ewma3) update(sample, dt float64) {
+	if !e.primed {
+		e.a1, e.a5, e.a15 = sample, sample, sample
+		e.primed = true
+		return
+	}
+	e.a1 += (1 - math.Exp(-dt/60)) * (sample - e.a1)
+	e.a5 += (1 - math.Exp(-dt/300)) * (sample - e.a5)
+	e.a15 += (1 - math.Exp(-dt/900)) * (sample - e.a15)
+}
+
+func (e *ewma3) avg() Avg { return Avg{A1: round(e.a1), A5: round(e.a5), A15: round(e.a15)} }
 
 // Sample is one point in the time-series ring buffer (for charts). Percentage fields
 // feed the combined utilization chart; the byte-rate fields feed the per-component
@@ -120,16 +185,23 @@ type Collector struct {
 	interval time.Duration
 	ringCap  int
 
-	// External samplers (GPU via nvidia-smi, per-process network via the privileged
-	// co-process). Both are always non-nil; they degrade to empty when unsupported.
-	gpu *gpu.Sampler
-	net *netmon.Sampler
+	// External samplers (GPU via nvidia-smi, per-process network and CPU package power
+	// via privileged co-processes). All non-nil; they degrade to empty when unsupported.
+	gpu   *gpu.Sampler
+	net   *netmon.Sampler
+	power *powermon.Sampler
 
-	mu       sync.RWMutex
-	summary  Summary
-	ring     []Sample
-	procs    []Process
-	hostInfo HostInfo
+	mu        sync.RWMutex
+	summary   Summary
+	ring      []Sample
+	procs     []Process
+	hostInfo  HostInfo
+	powerRing []PowerSample
+	powerAvg  PowerAvg // snapshot of the power EWMAs (read by Power())
+
+	// Per-component EWMA averages (owned by the sampler goroutine).
+	cpuL, memL, gpuL, ssdL, netL ewma3 // utilization averages
+	cpuPwrL, gpuPwrL, totPwrL    ewma3 // power averages (watts)
 
 	// Owned exclusively by the single sampler goroutine (and the synchronous Start()
 	// call that happens-before it) — never touched elsewhere, so they need no lock.
@@ -144,9 +216,9 @@ type Collector struct {
 }
 
 // New returns a collector sampling at the given interval (~120s of history at 2s).
-// The GPU and network samplers are injected so the daemon owns their lifecycles.
-func New(interval time.Duration, g *gpu.Sampler, n *netmon.Sampler) *Collector {
-	return &Collector{interval: interval, ringCap: 180, gpu: g, net: n, prevProc: map[int32]procCPU{}, ncpu: runtime.NumCPU()}
+// The GPU, network and power samplers are injected so the daemon owns their lifecycles.
+func New(interval time.Duration, g *gpu.Sampler, n *netmon.Sampler, p *powermon.Sampler) *Collector {
+	return &Collector{interval: interval, ringCap: 180, gpu: g, net: n, power: p, prevProc: map[int32]procCPU{}, ncpu: runtime.NumCPU()}
 }
 
 // Start loads static host info, primes the first sample, then samples on a ticker.
@@ -242,11 +314,12 @@ func (c *Collector) sample() {
 	procs := c.sampleProcs(now, gpuSnap, c.net.Get())
 	s.Procs = len(procs)
 
-	var gpuPct float64
+	var gpuPct, gpuW float64
 	for _, g := range s.GPUs {
 		if g.UtilPercent > gpuPct {
 			gpuPct = g.UtilPercent
 		}
+		gpuW += g.PowerW
 	}
 	smp := Sample{
 		Time:     s.Time,
@@ -260,6 +333,23 @@ func (c *Collector) sample() {
 		NetTx:    s.NetTxRate,
 	}
 
+	// Per-component utilization averages (1/5/15 min EWMA).
+	dt := c.interval.Seconds()
+	c.cpuL.update(s.CPUPercent, dt)
+	c.memL.update(s.MemPercent, dt)
+	c.gpuL.update(gpuPct, dt)
+	c.ssdL.update(s.SysDiskBusyPercent, dt)
+	c.netL.update(s.NetRxRate+s.NetTxRate, dt)
+	s.Loads = Loads{CPU: c.cpuL.avg(), Mem: c.memL.avg(), GPU: c.gpuL.avg(), SSD: c.ssdL.avg(), Net: c.netL.avg()}
+
+	// Per-component power (CPU via RAPL co-process, GPU via nvidia-smi) + averages.
+	cpuW := c.power.Watts()
+	totW := cpuW + gpuW
+	c.cpuPwrL.update(cpuW, dt)
+	c.gpuPwrL.update(gpuW, dt)
+	c.totPwrL.update(totW, dt)
+	psmp := PowerSample{Time: s.Time, CPU: round(cpuW), GPU: round(gpuW), Total: round(totW)}
+
 	c.mu.Lock()
 	c.summary = s
 	c.procs = procs
@@ -268,6 +358,11 @@ func (c *Collector) sample() {
 		// Copy down so the trimmed head is released, not retained behind a reslice.
 		c.ring = append([]Sample(nil), c.ring[len(c.ring)-c.ringCap:]...)
 	}
+	c.powerRing = append(c.powerRing, psmp)
+	if len(c.powerRing) > c.ringCap {
+		c.powerRing = append([]PowerSample(nil), c.powerRing[len(c.powerRing)-c.ringCap:]...)
+	}
+	c.powerAvg = PowerAvg{CPU: c.cpuPwrL.avg(), GPU: c.gpuPwrL.avg(), Total: c.totPwrL.avg()}
 	c.mu.Unlock()
 }
 
@@ -427,6 +522,21 @@ func (c *Collector) Series() []Sample {
 	out := make([]Sample, len(c.ring))
 	copy(out, c.ring)
 	return out
+}
+
+// Power returns the per-component power time-series, its 1/5/15-min averages, and which
+// sources are reporting (CPU via RAPL co-process, GPU via nvidia-smi).
+func (c *Collector) Power() PowerResponse {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]PowerSample, len(c.powerRing))
+	copy(out, c.powerRing)
+	return PowerResponse{
+		Samples:      out,
+		Avg:          c.powerAvg,
+		CPUAvailable: c.power.Available(),
+		GPUAvailable: c.gpu.Available(),
+	}
 }
 
 // Processes returns a copy of the latest per-process breakdown.
