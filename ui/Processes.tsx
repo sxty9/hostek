@@ -21,6 +21,12 @@ import type { Process, ProcessesResponse } from './types';
 // ~60s of history at the 2s poll cadence, used to draw the per-column stream graphs.
 const HISTORY = 30;
 const TOP_N = 6;
+// Frames averaged when ranking processes. Ranking by this smoothed value (not the
+// instantaneous one) gives membership AND stack order a built-in hysteresis window
+// (~12s): a momentary spike/dip no longer flickers a band in/out of "Other" or slides it
+// past a neighbour — only a sustained shift reshuffles the stack. The bands themselves
+// still plot the real per-frame values.
+const SMOOTH = 6;
 // Categorical palette for the stacked stream (distinct hues + a muted "Other").
 const PALETTE = [
   'rgb(var(--cpu))',
@@ -38,60 +44,71 @@ function shortName(name: string): string {
 
 interface StreamState {
   colorByPid: Map<number, string>;
-  order: number[];
   count: number;
 }
 
-// buildStreams stacks the top-N processes' contribution to a metric over the history
-// window (plus an aggregated "Other"). It persists per-PID color and a first-seen stack
-// order in `st`, so a process keeps the same color and layer even after it dips into
-// "Other" and reappears (instead of being re-colored/re-ordered each frame).
+// buildStreams stacks the top processes' contribution to a metric over the history window
+// (plus an aggregated "Other"). Ranking and stack order use each process's SMOOTHED value
+// (mean over the last SMOOTH frames), so membership and order only change on a sustained
+// shift — no flicker on momentary spikes. Per-PID colour persists in `st`, so a process
+// keeps the same colour even after it leaves the named set and returns.
 function buildStreams(
   history: Process[][],
   get: (p: Process) => number,
   st: StreamState,
 ): { series: StreamSeries[]; legend: { label: string; color: string }[] } {
   if (history.length === 0) return { series: [], legend: [] };
-  const latest = history[history.length - 1];
-  const ranked = latest.filter((p) => get(p) > 0).sort((a, b) => get(b) - get(a)).slice(0, TOP_N);
+
+  const window = history.slice(-SMOOTH);
+  const sum = new Map<number, number>();
+  const nameByPid = new Map<number, string>();
+  for (const frame of window) {
+    for (const p of frame) {
+      sum.set(p.pid, (sum.get(p.pid) ?? 0) + get(p));
+      nameByPid.set(p.pid, shortName(p.name)); // latest frame wins
+    }
+  }
+  const ranked = [...sum.entries()]
+    .map(([pid, total]) => [pid, total / window.length] as const)
+    .filter(([, avg]) => avg > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, TOP_N);
   if (ranked.length === 0) return { series: [], legend: [] };
 
-  for (const p of ranked) {
-    if (!st.colorByPid.has(p.pid)) {
-      st.colorByPid.set(p.pid, PALETTE[st.count % PALETTE.length]);
+  for (const [pid] of ranked) {
+    if (!st.colorByPid.has(pid)) {
+      st.colorByPid.set(pid, PALETTE[st.count % PALETTE.length]);
       st.count += 1;
     }
-    if (!st.order.includes(p.pid)) st.order.push(p.pid);
   }
 
-  const topPids = new Set(ranked.map((p) => p.pid));
-  const nameByPid = new Map(ranked.map((p) => [p.pid, shortName(p.name)]));
+  const shownPids = ranked.map(([pid]) => pid); // sorted by smoothed value, descending
+  const shownSet = new Set(shownPids);
   const maps = history.map((frame) => {
     const m = new Map<number, Process>();
     for (const p of frame) m.set(p.pid, p);
     return m;
   });
 
-  // Stable stack order: lay the shown PIDs out by their first-seen position.
-  const shown = [...ranked].sort((a, b) => st.order.indexOf(a.pid) - st.order.indexOf(b.pid));
-  const series: StreamSeries[] = shown.map((p) => ({
-    label: nameByPid.get(p.pid) ?? String(p.pid),
-    color: st.colorByPid.get(p.pid) ?? OTHER_COLOR,
+  // Biggest smoothed contributor at the bottom (StreamGraph stacks series[0] first).
+  const series: StreamSeries[] = shownPids.map((pid) => ({
+    label: nameByPid.get(pid) ?? String(pid),
+    color: st.colorByPid.get(pid) ?? OTHER_COLOR,
     data: maps.map((m) => {
-      const x = m.get(p.pid);
+      const x = m.get(pid);
       return x ? get(x) : 0;
     }),
   }));
 
   const other = history.map((frame) => {
-    let sum = 0;
+    let total = 0;
     for (const p of frame) {
-      if (!topPids.has(p.pid)) {
+      if (!shownSet.has(p.pid)) {
         const v = get(p);
-        if (v > 0) sum += v;
+        if (v > 0) total += v;
       }
     }
-    return sum;
+    return total;
   });
   if (other.some((v) => v > 0)) series.push({ label: 'Other', color: OTHER_COLOR, data: other });
 
@@ -104,7 +121,7 @@ function buildStreams(
 // table render cheap (HoverPanel evaluates the panel function only when shown). The
 // per-column StreamState ref keeps process colors/order stable across frames.
 function ColumnHover({ label, history, get }: { label: string; history: Process[][]; get: (p: Process) => number }) {
-  const stateRef = useRef<StreamState>({ colorByPid: new Map(), order: [], count: 0 });
+  const stateRef = useRef<StreamState>({ colorByPid: new Map(), count: 0 });
   return (
     <HoverPanel
       width={360}
