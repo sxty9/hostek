@@ -26,6 +26,7 @@ NETMON_WRAPPER=/usr/local/sbin/hostek-netmon
 SUDOERS=/etc/sudoers.d/hostek
 UNIT=/etc/systemd/system/hostek.service
 CADDY_ROUTE=/etc/caddy/conf.d/hostek.caddy
+PERMS_FILE=/etc/holistic/permissions.d/hostek.json
 
 # ── output ──────────────────────────────────────────────────────────────────────
 log()  { [ "${HOSTEK_QUIET:-0}" = "1" ] || printf '[hostek] %s\n' "$*"; }
@@ -241,6 +242,65 @@ WantedBy=multi-user.target
 EOF
 }
 
+write_permissions() {
+  # Declare hostek's fine-grained rights to the holistic rights standard (drop-in) and
+  # create their backing Linux groups. Each right is admin-only by default (default:false):
+  # without privleg the groups stay empty, so behaviour is exactly as before. privleg lets
+  # an admin grant a specific non-admin one of these rights = add them to the group.
+  # The daemon (api.go) and the UI enforce `isAdmin || group ∈ user.groups`.
+  install -d -o "$HOLISTIC_GROUP" -g "$HOLISTIC_GROUP" -m 0755 /etc/holistic/permissions.d 2>/dev/null \
+    || install -d -m 0755 /etc/holistic/permissions.d
+  cat > "$PERMS_FILE" <<'JSON'
+{
+  "service": "hostek",
+  "version": 1,
+  "categories": [
+    {
+      "id": "system",
+      "label": "System",
+      "description": "Energie- und Systemsteuerung.",
+      "permissions": [
+        {
+          "id": "power",
+          "label": "Power-Steuerung",
+          "description": "OS-Energieeinstellungen und den Headless-/Always-on-Modus ändern.",
+          "group": "hp_hostek_power",
+          "default": false,
+          "dangerous": true
+        }
+      ]
+    },
+    {
+      "id": "insight",
+      "label": "Einblick",
+      "description": "Erweiterte Einblicke in Prozesse und Hardware.",
+      "permissions": [
+        {
+          "id": "processes",
+          "label": "Prozessliste",
+          "description": "Laufende Prozesse und ihre CPU-/RAM-/Netz-Nutzung einsehen.",
+          "group": "hp_hostek_proc",
+          "default": false
+        },
+        {
+          "id": "hwdetail",
+          "label": "Hardware-Details",
+          "description": "Identifizierende Hardware-Felder sehen (Datenträger-Seriennummern, NIC-MAC-Adressen).",
+          "group": "hp_hostek_hwdetail",
+          "default": false
+        }
+      ]
+    }
+  ]
+}
+JSON
+  chmod 0644 "$PERMS_FILE"
+  local g
+  for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail; do
+    groupadd -f "$g"
+  done
+}
+
 write_caddy_route() {
   install -d /etc/caddy/conf.d
   cat > "$CADDY_ROUTE" <<EOF
@@ -301,6 +361,9 @@ cmd_setup() {
 
   log "adding Caddy route..."
   write_caddy_route
+
+  log "declaring rights (permissions.d) + backing groups..."
+  write_permissions
 
   log "linking UI plugin into holistic + rebuilding dashboard SPA..."
   install -d "$holistic/frontend/external"
@@ -382,7 +445,7 @@ cmd_uninstall() {
 
   systemctl disable --now hostek >/dev/null 2>&1 || true
   rm -f "$UNIT"; systemctl daemon-reload
-  rm -f "$CADDY_ROUTE" "$SUDOERS" "$WRAPPER" "$HWINFO_WRAPPER" "$NETMON_WRAPPER"
+  rm -f "$CADDY_ROUTE" "$SUDOERS" "$WRAPPER" "$HWINFO_WRAPPER" "$NETMON_WRAPPER" "$PERMS_FILE"
 
   local holistic
   if holistic="$(detect_holistic_repo 2>/dev/null)"; then
@@ -396,8 +459,12 @@ cmd_uninstall() {
   if [ "$purge" = "1" ]; then
     userdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     groupdel "$HOSTEK_USER" >/dev/null 2>&1 || true
+    local g
+    for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail; do
+      groupdel "$g" >/dev/null 2>&1 || true
+    done
     rm -rf "$HOSTEK_APP" /etc/hostek /var/lib/hostek
-    log "purged user, $HOSTEK_APP, /etc/hostek, /var/lib/hostek"
+    log "purged user, rights groups, $HOSTEK_APP, /etc/hostek, /var/lib/hostek"
   fi
   log "uninstalled"
 }
@@ -430,6 +497,7 @@ Generated artifacts (this script is their source of truth):
   $UNIT
   $CADDY_ROUTE
   $SUDOERS
+  $PERMS_FILE
   $WRAPPER
   $HWINFO_WRAPPER
   $NETMON_WRAPPER

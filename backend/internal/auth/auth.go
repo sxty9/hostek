@@ -32,6 +32,14 @@ type User struct {
 	IsAdmin  bool     `json:"isAdmin"`
 }
 
+// Can reports whether the user holds a fine-grained right under the holistic rights
+// standard: admins implicitly hold every right, otherwise membership in the backing
+// Linux group decides. Additive — on a host without privleg the hp_* groups are empty,
+// so this reduces to admin-only (identical to pre-rights-standard behaviour).
+func (u *User) Can(group string) bool {
+	return u.IsAdmin || contains(u.Groups, group)
+}
+
 // Verifier holds the shared signing secret and the group that confers admin.
 type Verifier struct {
 	secret     []byte

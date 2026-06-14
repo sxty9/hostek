@@ -1,6 +1,7 @@
 // Package api serves hostek's HTTP surface under /api/services/hostek/, behind the
 // shared holistic session. Aggregate metrics are available to every authenticated user;
-// the per-process breakdown and power configuration are admin-only (sudo). Error bodies
+// the per-process breakdown, hardware identifiers and power configuration are gated by
+// the holistic rights standard (admin, or a granted hp_hostek_* group). Error bodies
 // match holistic's contract: {"detail": "..."}.
 package api
 
@@ -16,6 +17,15 @@ import (
 )
 
 const base = "/api/services/hostek/"
+
+// Fine-grained rights hostek declares to the holistic rights standard (see
+// permissions.d/hostek.json, written by `hostek setup`). Each is backed by the
+// matching Linux group; admins implicitly hold all of them.
+const (
+	permPower    = "hp_hostek_power"    // read/change OS power + headless config
+	permProc     = "hp_hostek_proc"     // see the per-process breakdown
+	permHWDetail = "hp_hostek_hwdetail" // see identifying hardware fields (serial, MAC)
+)
 
 // Server wires the verifier and collectors into HTTP handlers.
 type Server struct {
@@ -34,30 +44,31 @@ type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
 // Handler returns the routed http.Handler (Go 1.22 method+path patterns).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+base+"summary", s.guard(false, false, s.summary))
-	mux.HandleFunc("GET "+base+"metrics", s.guard(false, false, s.series))
-	mux.HandleFunc("GET "+base+"host", s.guard(false, false, s.host))
-	mux.HandleFunc("GET "+base+"hardware", s.guard(false, false, s.hardware))
-	mux.HandleFunc("GET "+base+"disks", s.guard(false, false, s.disks))
-	mux.HandleFunc("GET "+base+"processes", s.guard(true, false, s.processes))
-	mux.HandleFunc("GET "+base+"config/power", s.guard(true, false, s.getPower))
-	mux.HandleFunc("POST "+base+"config/power", s.guard(true, true, s.setPower))
+	mux.HandleFunc("GET "+base+"summary", s.guard("", false, s.summary))
+	mux.HandleFunc("GET "+base+"metrics", s.guard("", false, s.series))
+	mux.HandleFunc("GET "+base+"host", s.guard("", false, s.host))
+	mux.HandleFunc("GET "+base+"hardware", s.guard("", false, s.hardware))
+	mux.HandleFunc("GET "+base+"disks", s.guard("", false, s.disks))
+	mux.HandleFunc("GET "+base+"processes", s.guard(permProc, false, s.processes))
+	mux.HandleFunc("GET "+base+"config/power", s.guard(permPower, false, s.getPower))
+	mux.HandleFunc("POST "+base+"config/power", s.guard(permPower, true, s.setPower))
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 	return mux
 }
 
-// guard authenticates, optionally requires admin, and optionally enforces CSRF.
-func (s *Server) guard(requireAdmin, csrf bool, h handler) http.HandlerFunc {
+// guard authenticates, optionally requires a fine-grained right (perm != "" ⇒
+// admin or membership in the backing group), and optionally enforces CSRF.
+func (s *Server) guard(perm string, csrf bool, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, err := s.v.User(r)
 		if err != nil {
 			writeErr(w, http.StatusUnauthorized, "Not authenticated")
 			return
 		}
-		if requireAdmin && !u.IsAdmin {
-			writeErr(w, http.StatusForbidden, "Administrator access required")
+		if perm != "" && !u.Can(perm) {
+			writeErr(w, http.StatusForbidden, "You do not have permission for this action")
 			return
 		}
 		if csrf && !s.v.CheckCSRF(r) {
@@ -81,10 +92,10 @@ func (s *Server) host(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 }
 
 // hardware serves the System tab's component inventory. Available to everyone, but
-// identifying fields (disk serial, NIC MAC) are redacted for non-admins.
+// identifying fields (disk serial, NIC MAC) need the hardware-detail right.
 func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	info := s.hw.Get()
-	if !u.IsAdmin {
+	if !u.Can(permHWDetail) {
 		info.Disk.Serial = ""
 		for i := range info.NICs {
 			info.NICs[i].MAC = ""
@@ -93,10 +104,10 @@ func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) 
 	writeJSON(w, http.StatusOK, info)
 }
 
-// disks serves the Disks tab's full device list. Serial numbers are admin-only.
+// disks serves the Disks tab's full device list. Serial numbers need the hardware-detail right.
 func (s *Server) disks(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	ds := s.hw.Disks()
-	if !u.IsAdmin {
+	if !u.Can(permHWDetail) {
 		for i := range ds {
 			ds[i].Serial = ""
 		}
