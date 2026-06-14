@@ -126,8 +126,8 @@ export function Performance({ api }: ServiceContextProps) {
             footer={
               <Stack gap={1}>
                 <ProgressBar value={gpuPct} tone="gpu" />
-                <Text variant="caption" color="secondary" truncate>
-                  {gpus[0].name} · {formatBytes(gpus[0].memUsed)} / {formatBytes(gpus[0].memTotal)}
+                <Text variant="caption" color="secondary">
+                  {formatBytes(gpus[0].memUsed)} / {formatBytes(gpus[0].memTotal)}
                 </Text>
               </Stack>
             }
@@ -178,25 +178,32 @@ export function Performance({ api }: ServiceContextProps) {
         </Panel>
 
         {hasGpu && (
-          <Panel title={gpus.length > 1 ? 'Graphics' : gpus[0].name} className="p-4">
+          <Panel title="Graphics" className="p-4">
             <Stack direction="row" gap={4} align="center" wrap>
-              {gpus.map((g, i) => (
-                <Stack key={i} direction="row" gap={3} align="center">
-                  <Gauge value={g.utilPercent} tone="gpu" sublabel={`GPU ${g.index}`} />
-                  <Stack gap={1} className="min-w-[150px]">
-                    <Text variant="caption" color="secondary">
-                      VRAM
-                    </Text>
-                    <ProgressBar value={g.memPercent} tone="gpu" />
-                    <Text variant="caption" color="secondary">
-                      {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
-                    </Text>
-                    <Text variant="caption" color="secondary">
-                      {Math.round(g.tempC)} °C · {Math.round(g.powerW)} W
-                    </Text>
+              {gpus.map((g, i) => {
+                const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : '']
+                  .filter(Boolean)
+                  .join(' · ');
+                return (
+                  <Stack key={i} direction="row" gap={3} align="center">
+                    <Gauge value={g.utilPercent} tone="gpu" sublabel={`GPU ${g.index}`} />
+                    <Stack gap={1} className="min-w-[150px]">
+                      <Text variant="caption" color="secondary">
+                        VRAM
+                      </Text>
+                      <ProgressBar value={g.memPercent} tone="gpu" />
+                      <Text variant="caption" color="secondary">
+                        {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
+                      </Text>
+                      {tp && (
+                        <Text variant="caption" color="secondary">
+                          {tp}
+                        </Text>
+                      )}
+                    </Stack>
                   </Stack>
-                </Stack>
-              ))}
+                );
+              })}
             </Stack>
           </Panel>
         )}
@@ -239,26 +246,31 @@ export function Performance({ api }: ServiceContextProps) {
       </Grid>
 
       {/* Load average + uptime */}
-      <Panel title="Load average" className="p-4">
-        <Stack direction="row" gap={5} wrap align="center">
-          {([['1 min', s.load1], ['5 min', s.load5], ['15 min', s.load15]] as const).map(([label, v]) => (
-            <Stack key={label} gap={0}>
-              <Text variant="title3" weight="semibold" className="tabular-nums">
-                {v}
+      <Panel title="Load average — system-wide CPU run-queue" className="p-4">
+        <Stack gap={2}>
+          <Stack direction="row" gap={5} wrap align="center">
+            {([['1 min', s.load1], ['5 min', s.load5], ['15 min', s.load15]] as const).map(([label, v]) => (
+              <Stack key={label} gap={0}>
+                <Text variant="title3" weight="semibold" className="tabular-nums">
+                  {v}
+                </Text>
+                <Text variant="caption" color="secondary">
+                  {label}
+                </Text>
+              </Stack>
+            ))}
+            <Stack grow gap={0} className="min-w-[180px]">
+              <Text variant="footnote" color="secondary">
+                Uptime {formatDuration(s.uptime)}
               </Text>
-              <Text variant="caption" color="secondary">
-                {label}
+              <Text variant="footnote" color="secondary">
+                {s.procs} processes
               </Text>
             </Stack>
-          ))}
-          <Stack grow gap={0} className="min-w-[180px]">
-            <Text variant="footnote" color="secondary">
-              Uptime {formatDuration(s.uptime)}
-            </Text>
-            <Text variant="footnote" color="secondary">
-              {s.procs} processes
-            </Text>
           </Stack>
+          <Text variant="caption" color="tertiary">
+            System-wide CPU run-queue averaged over 1 / 5 / 15 min · relative to {s.perCpu.length} logical CPUs
+          </Text>
         </Stack>
       </Panel>
     </Stack>

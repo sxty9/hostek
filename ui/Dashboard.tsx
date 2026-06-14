@@ -19,13 +19,14 @@ export function Dashboard(props: ServiceContextProps) {
   const canPower = userHasRight(user, 'hp_hostek_power');
   const canProc = userHasRight(user, 'hp_hostek_proc');
 
+  // Order: System · Performance · Processes · Disks · Config.
   const options: SegmentedOption<Tab>[] = [
     { value: 'system', label: 'System' },
     { value: 'performance', label: 'Performance' },
   ];
-  if (canPower) options.push({ value: 'config', label: 'Config' });
-  options.push({ value: 'disks', label: 'Disks' });
   if (canProc) options.push({ value: 'processes', label: 'Processes' });
+  options.push({ value: 'disks', label: 'Disks' });
+  if (canPower) options.push({ value: 'config', label: 'Config' });
 
   return (
     <ContentRegion>

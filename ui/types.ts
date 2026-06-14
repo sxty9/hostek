@@ -106,6 +106,7 @@ export interface CPUInfo {
   maxClockMhz?: number;
   curClockMhz?: number;
   perCoreMhz?: number[];
+  tempC?: number;
   cacheL1?: string;
   cacheL2?: string;
   cacheL3?: string;

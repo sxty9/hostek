@@ -6,6 +6,7 @@ import {
   EthernetIcon,
   GpuIcon,
   Grid,
+  Marquee,
   MemoryIcon,
   MotherboardIcon,
   Panel,
@@ -21,13 +22,14 @@ import {
 import type { ReactNode } from 'react';
 import type { HardwareInfo } from './types';
 
-// Clock formatter: 3200 → "3.20 GHz", 800 → "800 MHz".
+// Atomic value formatters — every spec is a single simplified figure.
 function mhz(v?: number): string | undefined {
   if (!v || v <= 0) return undefined;
   return v >= 1000 ? `${(v / 1000).toFixed(2)} GHz` : `${Math.round(v)} MHz`;
 }
 const watts = (v?: number) => (v && v > 0 ? `${Math.round(v)} W` : undefined);
-const tempC = (v?: number) => (v && v > 0 ? `${Math.round(v)} °C` : undefined);
+const degC = (v?: number) => (v && v > 0 ? `${Math.round(v)} °C` : undefined);
+const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ') || undefined;
 
 function Spec({ label, value }: { label: string; value?: ReactNode }) {
   if (value === undefined || value === null || value === '') return null;
@@ -52,8 +54,8 @@ function CompCard({
 }: {
   icon: ReactNode;
   tileClass: string;
-  title: ReactNode;
-  subtitle?: ReactNode;
+  title: string;
+  subtitle?: string;
   children: ReactNode;
 }) {
   return (
@@ -61,15 +63,9 @@ function CompCard({
       <Stack gap={3}>
         <Stack direction="row" align="center" gap={3}>
           <Box className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-md', tileClass)}>{icon}</Box>
-          <Stack gap={0} className="min-w-0">
-            <Text weight="semibold" truncate>
-              {title}
-            </Text>
-            {subtitle && (
-              <Text variant="caption" color="secondary" truncate>
-                {subtitle}
-              </Text>
-            )}
+          <Stack gap={0} className="min-w-0 grow">
+            <Marquee text={title} className="text-subhead font-semibold text-text-primary" />
+            {subtitle && <Marquee text={subtitle} className="text-caption text-text-secondary" />}
           </Stack>
         </Stack>
         <Divider />
@@ -104,16 +100,17 @@ export function System({ api }: ServiceContextProps) {
         icon={<CpuIcon className="h-5 w-5 text-cpu" />}
         tileClass="bg-cpu/15"
         title={cpu.model || 'Processor'}
-        subtitle={[cpu.vendor, cpu.socket && `Socket ${cpu.socket}`].filter(Boolean).join(' · ') || undefined}
+        subtitle={join(cpu.vendor, cpu.socket && `Socket ${cpu.socket}`)}
       >
         <Spec label="Cores / Threads" value={cpu.cores ? `${cpu.cores} / ${cpu.threads ?? '?'}` : undefined} />
         <Spec label="Base clock" value={mhz(cpu.baseClockMhz)} />
         <Spec label="Max clock" value={mhz(cpu.maxClockMhz)} />
         <Spec label="Current clock" value={mhz(cpu.curClockMhz)} />
-        <Spec label="Family" value={cpu.family} />
+        <Spec label="Temperature" value={degC(cpu.tempC)} />
         <Spec label="L1 cache" value={cpu.cacheL1} />
         <Spec label="L2 cache" value={cpu.cacheL2} />
         <Spec label="L3 cache" value={cpu.cacheL3} />
+        <Spec label="Family" value={cpu.family} />
       </CompCard>
 
       {/* Memory */}
@@ -131,15 +128,11 @@ export function System({ api }: ServiceContextProps) {
                   {m.slot || `Slot ${i + 1}`}
                 </Text>
                 <Text variant="footnote" className="text-right tabular-nums">
-                  {[m.sizeBytes ? formatBytes(m.sizeBytes) : null, m.type, mhz(m.configuredMhz || m.speedMhz)]
-                    .filter(Boolean)
-                    .join(' · ')}
+                  {join(m.sizeBytes ? formatBytes(m.sizeBytes) : undefined, m.type, mhz(m.configuredMhz || m.speedMhz))}
                 </Text>
               </Stack>
               {(m.manufacturer || m.partNumber || m.timings) && (
-                <Text variant="caption" color="secondary" truncate>
-                  {[m.manufacturer, m.partNumber, m.timings].filter(Boolean).join(' · ')}
-                </Text>
+                <Marquee text={join(m.manufacturer, m.partNumber, m.timings) ?? ''} className="text-caption text-text-secondary" />
               )}
             </Stack>
           ))
@@ -157,15 +150,15 @@ export function System({ api }: ServiceContextProps) {
           icon={<GpuIcon className="h-5 w-5 text-gpu" />}
           tileClass="bg-gpu/15"
           title={g.name || 'Graphics'}
-          subtitle={[g.driver && `Driver ${g.driver}`, g.cuda && `CUDA ${g.cuda}`].filter(Boolean).join(' · ') || undefined}
+          subtitle={join(g.driver && `Driver ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
         >
           <Spec label="VRAM" value={g.memTotalBytes ? formatBytes(g.memTotalBytes) : undefined} />
           <Spec label="Base clock" value={mhz(g.baseClockMhz)} />
           <Spec label="Boost clock" value={mhz(g.boostClockMhz)} />
           <Spec label="Current clock" value={mhz(g.curClockMhz)} />
           <Spec label="Memory clock" value={mhz(g.memClockMhz || g.memMaxClockMhz)} />
-          <Spec label="Temperature" value={tempC(g.tempC)} />
-          <Spec label="Power" value={watts(g.powerW) && watts(g.powerLimitW) ? `${watts(g.powerW)} / ${watts(g.powerLimitW)}` : watts(g.powerW)} />
+          <Spec label="Temperature" value={degC(g.tempC)} />
+          <Spec label="Power" value={join(watts(g.powerW), g.powerLimitW ? `limit ${watts(g.powerLimitW)}` : undefined)} />
         </CompCard>
       ))}
 
@@ -173,7 +166,7 @@ export function System({ api }: ServiceContextProps) {
       <CompCard
         icon={<MotherboardIcon className="h-5 w-5 text-text-secondary" />}
         tileClass="bg-fill/15"
-        title={[board.manufacturer, board.model].filter(Boolean).join(' ') || 'Mainboard'}
+        title={join(board.manufacturer, board.model) || 'Mainboard'}
         subtitle={board.version || undefined}
       >
         <Spec label="BIOS vendor" value={board.biosVendor} />
@@ -186,14 +179,14 @@ export function System({ api }: ServiceContextProps) {
         icon={<SsdIcon className="h-5 w-5 text-ssd" />}
         tileClass="bg-ssd/15"
         title={disk.model || disk.device || 'System disk'}
-        subtitle={[disk.type, disk.device && `/dev/${disk.device}`].filter(Boolean).join(' · ') || undefined}
+        subtitle={join(disk.type, disk.device && `/dev/${disk.device}`)}
       >
         <Spec label="Capacity" value={disk.sizeBytes ? formatBytes(disk.sizeBytes) : undefined} />
         <Spec
           label="Health"
           value={disk.health ? <Badge variant={disk.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{disk.health}</Badge> : undefined}
         />
-        <Spec label="Temperature" value={tempC(disk.tempC)} />
+        <Spec label="Temperature" value={degC(disk.tempC)} />
         <Spec label="Power-on hours" value={disk.powerOnHours ? disk.powerOnHours.toLocaleString() : undefined} />
         <Spec label="Firmware" value={disk.firmware} />
         <Spec label="Serial" value={disk.serial} />

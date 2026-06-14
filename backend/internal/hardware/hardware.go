@@ -47,6 +47,7 @@ type CPUInfo struct {
 	MaxClockMHz  float64   `json:"maxClockMhz,omitempty"`
 	CurClockMHz  float64   `json:"curClockMhz,omitempty"` // dynamic (avg of per-core)
 	PerCoreMHz   []float64 `json:"perCoreMhz,omitempty"`  // dynamic
+	TempC        float64   `json:"tempC,omitempty"`       // dynamic (package/Tctl)
 	CacheL1      string    `json:"cacheL1,omitempty"`
 	CacheL2      string    `json:"cacheL2,omitempty"`
 	CacheL3      string    `json:"cacheL3,omitempty"`
@@ -136,6 +137,7 @@ type Info struct {
 type dynamic struct {
 	perCoreMHz []float64
 	curClock   float64
+	cpuTemp    float64
 	gpu        []gpuDynamic
 }
 
@@ -186,6 +188,7 @@ func (c *Collector) Get() Info {
 	info := c.st // value copy; slices are shared but we don't mutate the static ones
 	info.CPU.PerCoreMHz = append([]float64(nil), c.dyn.perCoreMHz...)
 	info.CPU.CurClockMHz = c.dyn.curClock
+	info.CPU.TempC = c.dyn.cpuTemp
 	// Merge per-GPU dynamics by row index against the static GPU slice.
 	if len(c.dyn.gpu) > 0 {
 		gpus := make([]GPUInfo, len(info.GPUs))
@@ -236,6 +239,7 @@ func (c *Collector) probeDynamic() {
 		}
 		d.curClock = roundMHz(sum / float64(len(d.perCoreMHz)))
 	}
+	d.cpuTemp = readCPUTemp()
 	d.gpu = readGPUDynamic()
 
 	c.mu.Lock()
@@ -264,10 +268,11 @@ func probeCPU() CPUInfo {
 			ci.Cores = cps * sk
 		}
 		ci.MaxClockMHz = roundMHz(atof(kv["CPU max MHz"]))
-		// Combine the split L1 data/instruction caches into one figure.
-		ci.CacheL1 = combineL1(kv["L1d cache"], kv["L1i cache"])
-		ci.CacheL2 = kv["L2 cache"]
-		ci.CacheL3 = kv["L3 cache"]
+		// Atomic, simplified cache figures: drop lscpu's "(N instances)" notes and
+		// fold the split L1 data+instruction caches into one total.
+		ci.CacheL1 = sumCache(kv["L1d cache"], kv["L1i cache"])
+		ci.CacheL2 = cleanCache(kv["L2 cache"])
+		ci.CacheL3 = cleanCache(kv["L3 cache"])
 	}
 
 	// Base clock: cpufreq base_frequency (kHz) is the most accurate when present.
@@ -302,17 +307,39 @@ func probeCPU() CPUInfo {
 	return ci
 }
 
-// combineL1 turns "32 KiB (1 instance)" pairs into "L1d + L1i" — keep the raw
-// data side and append the instruction side when both are present.
-func combineL1(l1d, l1i string) string {
-	switch {
-	case l1d != "" && l1i != "":
-		return l1d + " + " + l1i
-	case l1d != "":
-		return l1d
-	default:
-		return l1i
+var cacheParenRe = regexp.MustCompile(`\s*\(.*\)\s*$`)
+
+// cleanCache strips lscpu's "(N instances)" suffix, leaving an atomic "<n> <unit>".
+func cleanCache(s string) string {
+	return strings.TrimSpace(cacheParenRe.ReplaceAllString(s, ""))
+}
+
+// sumCache folds the split L1 data + instruction caches into one total. When both
+// sides share a unit it sums them (e.g. "256 KiB" + "256 KiB" → "512 KiB");
+// otherwise it falls back to a cleaned "a + b".
+func sumCache(l1d, l1i string) string {
+	a, b := cleanCache(l1d), cleanCache(l1i)
+	na, ua := parseCacheSize(a)
+	nb, ub := parseCacheSize(b)
+	if ua != "" && ua == ub {
+		return strconv.FormatFloat(na+nb, 'f', -1, 64) + " " + ua
 	}
+	switch {
+	case a != "" && b != "":
+		return a + " + " + b
+	case a != "":
+		return a
+	default:
+		return b
+	}
+}
+
+func parseCacheSize(s string) (float64, string) {
+	f := strings.Fields(s)
+	if len(f) < 2 {
+		return 0, ""
+	}
+	return atof(f[0]), f[1]
 }
 
 // readPerCoreMHz reads every CPU's scaling_cur_freq (kHz→MHz). Falls back to
@@ -375,6 +402,53 @@ func cpuinfoMHz() []float64 {
 		}
 	}
 	return out
+}
+
+// cpuTempChips lists the hwmon chip names that report CPU temperature, in
+// preference order (AMD k10temp/zenpower, Intel coretemp, ARM cpu_thermal).
+var cpuTempChips = []string{"k10temp", "zenpower", "coretemp", "cpu_thermal"}
+
+// cpuTempLabels are the per-chip sensor labels to prefer (package/die temp first).
+var cpuTempLabels = []string{"tdie", "tctl", "package id 0", "package", "tccd1"}
+
+// readCPUTemp returns the package/Tctl CPU temperature in °C from sysfs hwmon,
+// or 0 when no CPU temperature sensor is present.
+func readCPUTemp() float64 {
+	if runtime.GOOS != "linux" {
+		return 0
+	}
+	names, _ := filepath.Glob("/sys/class/hwmon/hwmon*/name")
+	chipDir, chipRank := "", len(cpuTempChips)
+	for _, np := range names {
+		name := strings.ToLower(readSysStr(np))
+		for i, w := range cpuTempChips {
+			if name == w && i < chipRank {
+				chipRank, chipDir = i, filepath.Dir(np)
+			}
+		}
+	}
+	if chipDir == "" {
+		return 0
+	}
+	// Prefer the package/die label; fall back to temp1_input.
+	input, rank := "", len(cpuTempLabels)
+	labels, _ := filepath.Glob(filepath.Join(chipDir, "temp*_label"))
+	for _, lp := range labels {
+		lbl := strings.ToLower(readSysStr(lp))
+		for i, p := range cpuTempLabels {
+			if strings.Contains(lbl, p) && i < rank {
+				rank = i
+				input = strings.TrimSuffix(lp, "_label") + "_input"
+			}
+		}
+	}
+	if input == "" {
+		input = filepath.Join(chipDir, "temp1_input")
+	}
+	if v := atof(readSysStr(input)); v > 0 {
+		return math.Round(v / 1000) // milli-°C → °C
+	}
+	return 0
 }
 
 // --- Memory ------------------------------------------------------------------
@@ -519,8 +593,10 @@ func readGPUDynamic() []gpuDynamic {
 	if _, err := exec.LookPath("nvidia-smi"); err != nil {
 		return nil
 	}
+	// NB: the valid field names are clocks.current.*, not clocks.graphics/clocks.memory
+	// (the latter make nvidia-smi reject the whole query → no live clocks/temp/power).
 	out, ok := runCmd(cmdTimeout, "nvidia-smi",
-		"--query-gpu=clocks.graphics,clocks.memory,temperature.gpu,power.draw",
+		"--query-gpu=clocks.current.graphics,clocks.current.memory,temperature.gpu,power.draw",
 		"--format=csv,noheader,nounits")
 	if !ok {
 		return nil
@@ -550,7 +626,7 @@ func probeSystemDisk() DiskHWInfo {
 		return d
 	}
 	dev := "/dev/" + root
-	d.Device = dev
+	d.Device = root // base name ("sda"); the UI prepends /dev/
 
 	// lsblk gives model/serial/transport/size/rotational for the whole disk.
 	if devs, ok := lsblkDevices(dev); ok && len(devs) > 0 {
