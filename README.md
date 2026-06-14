@@ -17,11 +17,18 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
 
 - **Single Sign-On:** hostekd validiert dieselbe holistic-Session (HS256-JWT im Cookie
   `h_access`, Secret `/etc/holistic/jwt-secret`) — kein eigener Login.
-- **Rollen (Single Source of Truth = Linux):** **Admin = Mitglied der `sudo`-Gruppe**.
-  Admins sehen alle Tabs (`System · Performance · Config · Disks · Processes`) und dürfen
-  konfigurieren. Nicht-Admins sind **read-only** und sehen nur `System · Performance · Disks`
-  (Performance nur als Gesamtauslastung pro Komponente — keine Prozess-Sicht, kein Config).
-  Identifizierende Felder (Disk-Serial, NIC-MAC) werden für Nicht-Admins redigiert.
+- **Rollen (holistic-Rights-Standard, Source of Truth = Linux):** **Admin = `sudo`-Gruppe**;
+  Admins haben implizit alle Rechte und sehen alle Tabs. Standard-User sind **read-only** und
+  sehen nur `System · Performance` (Performance ohne Temperatur-/Power-Werte; die System-SSD
+  bleibt im System-Tab sichtbar). Feinere Rechte (Backing-Gruppe) werden per `privleg` an Nicht-Admins
+  vergeben — der Daemon **und** die UI erzwingen `isAdmin || group ∈ user.groups` und redigieren
+  gesperrte Werte:
+  - `hp_hostek_thermal` — Temperaturen (CPU/GPU/Disk) + **Thermal**-Tab
+  - `hp_hostek_powerinfo` — Power-Telemetrie (Watt) + **Power**-Tab
+  - `hp_hostek_disks` — der **Disks**-Tab (alle Datenträger)
+  - `hp_hostek_proc` — Prozessliste + **Processes**-Tab
+  - `hp_hostek_hwdetail` — Detail-/Identifikationsfelder (Serial, MAC, Firmware, Treiber, Betriebsstunden)
+  - `hp_hostek_power` — OS-Energie/Headless **ändern** + **Config**-Tab (dangerous)
 - **Least privilege:** Der Daemon läuft als unprivilegierter User `hostek`; Config-Schreib-
   zugriffe gehen ausschließlich über den schmalen sudo-Wrapper `hostek-power-set`.
 
@@ -66,14 +73,16 @@ Weitere Kommandos: `hostek build` (nur Daemon neu bauen), `hostek start|stop|res
 
 | Methode | Pfad | Rolle | Zweck |
 |---|---|---|---|
-| GET | `summary` | alle | Aggregat (CPU/RAM/GPU/SSD-I/O/Netz/Load/Uptime) |
+| GET | `summary` | alle | Aggregat (CPU/RAM/GPU/SSD-I/O/Netz/Load); GPU-Temp/-Power je nach Recht redigiert |
 | GET | `metrics` | alle | Zeitreihen (Ring-Buffer): CPU/RAM/GPU %, SSD read/write/busy, Netz |
 | GET | `host` | alle | statische Host-Infos |
-| GET | `hardware` | alle | Hardware-Inventar (System-Tab; Serial/MAC für Nicht-Admins redigiert) |
-| GET | `disks` | alle | alle Disks: Port, Kapazität, Belegung (Serial nur Admin) |
-| GET | `processes` | **admin** | Prozessliste (PID, CPU%, RAM, GPU%/Engine, Netz, Status) |
-| GET | `config/power` | **admin** | Headless/Always-on-Zustand (+ BIOS-Info) |
-| POST | `config/power` | **admin** | Headless-Settings anwenden (CSRF) |
+| GET | `hardware` | alle | Hardware-Inventar (Temp `thermal`, GPU-Power `powerinfo`, Serial/MAC/Firmware/Treiber `hwdetail`) |
+| GET | `disks` | `disks` | alle Datenträger (Temp `thermal`, Serial/Firmware/Betriebsstunden `hwdetail`) |
+| GET | `power` | `powerinfo` | Power-Telemetrie (CPU/GPU/Total Watt + 1/5/15-Mittel) |
+| GET | `thermal` | `thermal` | Temperatur-Zeitreihen + kritische Schwellen |
+| GET | `processes` | `proc` | Prozessliste (PID, CPU%, RAM, GPU%/Engine, Netz, Status) |
+| GET | `config/power` | `power` | Headless/Always-on-Zustand (+ BIOS-Info) |
+| POST | `config/power` | `power` | Headless-Settings anwenden (CSRF) |
 
 Fehler folgen holistics Vertrag: `{"detail": "..."}`.
 

@@ -314,8 +314,29 @@ write_permissions() {
         {
           "id": "hwdetail",
           "label": "Hardware-Details",
-          "description": "Identifizierende Hardware-Felder sehen (Datenträger-Seriennummern, NIC-MAC-Adressen).",
+          "description": "Detail-/Identifikationsfelder sehen (Seriennummern, MAC, Firmware, Treiber, Betriebsstunden).",
           "group": "hp_hostek_hwdetail",
+          "default": false
+        },
+        {
+          "id": "thermal",
+          "label": "Temperaturen",
+          "description": "Temperaturwerte und den Thermal-Tab einsehen (CPU, GPU, Datenträger).",
+          "group": "hp_hostek_thermal",
+          "default": false
+        },
+        {
+          "id": "powerinfo",
+          "label": "Power-Telemetrie",
+          "description": "Stromverbrauch (Watt) der Komponenten und den Power-Tab einsehen.",
+          "group": "hp_hostek_powerinfo",
+          "default": false
+        },
+        {
+          "id": "disks",
+          "label": "Datenträger",
+          "description": "Den Disks-Tab mit allen Datenträgern einsehen.",
+          "group": "hp_hostek_disks",
           "default": false
         }
       ]
@@ -325,7 +346,7 @@ write_permissions() {
 JSON
   chmod 0644 "$PERMS_FILE"
   local g
-  for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail; do
+  for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks; do
     groupadd -f "$g"
   done
 }
@@ -491,7 +512,7 @@ cmd_uninstall() {
     userdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     groupdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     local g
-    for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail; do
+    for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks; do
       groupdel "$g" >/dev/null 2>&1 || true
     done
     rm -rf "$HOSTEK_APP" /etc/hostek /var/lib/hostek

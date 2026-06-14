@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"hostek/internal/auth"
+	"hostek/internal/gpu"
 	"hostek/internal/hardware"
 	"hostek/internal/metrics"
 	"hostek/internal/sysconfig"
@@ -22,9 +23,12 @@ const base = "/api/services/hostek/"
 // permissions.d/hostek.json, written by `hostek setup`). Each is backed by the
 // matching Linux group; admins implicitly hold all of them.
 const (
-	permPower    = "hp_hostek_power"    // read/change OS power + headless config
-	permProc     = "hp_hostek_proc"     // see the per-process breakdown
-	permHWDetail = "hp_hostek_hwdetail" // see identifying hardware fields (serial, MAC)
+	permPower     = "hp_hostek_power"     // change OS power + headless config (dangerous)
+	permProc      = "hp_hostek_proc"      // see the per-process breakdown
+	permHWDetail  = "hp_hostek_hwdetail"  // see identifying hardware fields (serial, MAC)
+	permThermal   = "hp_hostek_thermal"   // see temperature info + the Thermal tab
+	permPowerInfo = "hp_hostek_powerinfo" // see power telemetry + the Power tab
+	permDisks     = "hp_hostek_disks"     // see disks beyond the system disk
 )
 
 // Server wires the verifier and collectors into HTTP handlers.
@@ -46,11 +50,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+base+"summary", s.guard("", false, s.summary))
 	mux.HandleFunc("GET "+base+"metrics", s.guard("", false, s.series))
-	mux.HandleFunc("GET "+base+"power", s.guard("", false, s.power))
-	mux.HandleFunc("GET "+base+"thermal", s.guard("", false, s.thermal))
+	mux.HandleFunc("GET "+base+"power", s.guard(permPowerInfo, false, s.power))
+	mux.HandleFunc("GET "+base+"thermal", s.guard(permThermal, false, s.thermal))
 	mux.HandleFunc("GET "+base+"host", s.guard("", false, s.host))
 	mux.HandleFunc("GET "+base+"hardware", s.guard("", false, s.hardware))
-	mux.HandleFunc("GET "+base+"disks", s.guard("", false, s.disks))
+	mux.HandleFunc("GET "+base+"disks", s.guard(permDisks, false, s.disks))
 	mux.HandleFunc("GET "+base+"processes", s.guard(permProc, false, s.processes))
 	mux.HandleFunc("GET "+base+"config/power", s.guard(permPower, false, s.getPower))
 	mux.HandleFunc("POST "+base+"config/power", s.guard(permPower, true, s.setPower))
@@ -81,8 +85,22 @@ func (s *Server) guard(perm string, csrf bool, h handler) http.HandlerFunc {
 	}
 }
 
-func (s *Server) summary(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
-	writeJSON(w, http.StatusOK, s.c.Summary())
+func (s *Server) summary(w http.ResponseWriter, _ *http.Request, u *auth.User) {
+	sum := s.c.Summary()
+	// Temperature and power are gated; redact the per-GPU values without the rights.
+	// Copy the GPU slice first so we never mutate the collector's cached snapshot.
+	if !u.Can(permThermal) || !u.Can(permPowerInfo) {
+		sum.GPUs = append([]gpu.GPU(nil), sum.GPUs...)
+		for i := range sum.GPUs {
+			if !u.Can(permThermal) {
+				sum.GPUs[i].TempC = 0
+			}
+			if !u.Can(permPowerInfo) {
+				sum.GPUs[i].PowerW = 0
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, sum)
 }
 
 func (s *Server) series(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
@@ -104,24 +122,56 @@ func (s *Server) thermal(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 }
 
 // hardware serves the System tab's component inventory. Available to everyone, but
-// identifying fields (disk serial, NIC MAC) need the hardware-detail right.
+// identifying fields (serial, MAC) need hwdetail, temperatures need thermal, and GPU
+// power needs powerinfo. Slices are copied before redacting so the cache stays intact.
 func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	info := s.hw.Get()
-	if !u.Can(permHWDetail) {
-		info.Disk.Serial = ""
+	canHW := u.Can(permHWDetail)
+	canTherm := u.Can(permThermal)
+	canPwr := u.Can(permPowerInfo)
+
+	if !canTherm {
+		info.CPU.TempC = 0
+		info.Disk.TempC = 0
+	}
+	if !canHW {
+		info.Disk.Serial, info.Disk.Firmware, info.Disk.PowerOnHours = "", "", 0
+	}
+	if (!canTherm || !canPwr || !canHW) && len(info.GPUs) > 0 {
+		info.GPUs = append([]hardware.GPUInfo(nil), info.GPUs...)
+		for i := range info.GPUs {
+			if !canTherm {
+				info.GPUs[i].TempC = 0
+			}
+			if !canPwr {
+				info.GPUs[i].PowerW, info.GPUs[i].PowerLimitW = 0, 0
+			}
+			if !canHW {
+				info.GPUs[i].Driver = ""
+			}
+		}
+	}
+	if !canHW && len(info.NICs) > 0 {
+		info.NICs = append([]hardware.NICInfo(nil), info.NICs...)
 		for i := range info.NICs {
-			info.NICs[i].MAC = ""
+			info.NICs[i].MAC, info.NICs[i].Driver = "", ""
 		}
 	}
 	writeJSON(w, http.StatusOK, info)
 }
 
-// disks serves the Disks tab's full device list. Serial numbers need the hardware-detail right.
+// disks serves the Disks tab (gated by the disks right). Identifying/detail fields need
+// hwdetail; temperatures need thermal.
 func (s *Server) disks(w http.ResponseWriter, _ *http.Request, u *auth.User) {
-	ds := s.hw.Disks()
-	if !u.Can(permHWDetail) {
-		for i := range ds {
-			ds[i].Serial = ""
+	ds := s.hw.Disks() // freshly built each call, safe to mutate in place
+	canHW := u.Can(permHWDetail)
+	canTherm := u.Can(permThermal)
+	for i := range ds {
+		if !canHW {
+			ds[i].Serial, ds[i].Firmware, ds[i].PowerOnHours = "", "", 0
+		}
+		if !canTherm {
+			ds[i].TempC = 0
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"disks": ds})
