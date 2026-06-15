@@ -20,22 +20,30 @@ import type { Process, ProcessesResponse } from './types';
 
 // ~60s of history at the 2s poll cadence, used to draw the per-column stream graphs.
 const HISTORY = 30;
+// Promote bar: the top-N processes by SMOOTHED value get their own band; the rest fold
+// into "Other".
 const TOP_N = 6;
-// Frames averaged when ranking processes. Ranking by this smoothed value (not the
-// instantaneous one) gives membership AND stack order a built-in hysteresis window
-// (~12s): a momentary spike/dip no longer flickers a band in/out of "Other" or slides it
-// past a neighbour — only a sustained shift reshuffles the stack. The bands themselves
-// still plot the real per-frame values.
+// Frames averaged when ranking processes (~12s). Ranking by the smoothed value (not the
+// instantaneous one) denoises the rank itself, so a single spike/dip can't reshuffle it.
 const SMOOTH = 6;
-// Categorical palette for the stacked stream (distinct hues + a muted "Other").
+// Membership hysteresis: once a process crosses the promote bar it keeps its own band and
+// only folds back into "Other" after it has stayed BELOW the bar continuously for this long.
+// A process bouncing across the bar resets this timer every time it pops back in, so a
+// borderline process never flickers in/out — only a genuinely sustained drop demotes it.
+const DEMOTE_MS = 60_000;
+// Categorical palette for the stacked stream (distinct hues + a muted "Other"). Sticky
+// membership can briefly hold more than TOP_N bands at once during contention, so the
+// palette also doubles as the hard ceiling (MAX_SHOWN) — every band keeps a distinct hue.
 const PALETTE = [
-  'rgb(var(--cpu))',
-  'rgb(var(--ram))',
-  'rgb(var(--gpu))',
-  'rgb(var(--net))',
-  'rgb(var(--ssd))',
-  'rgb(var(--warning))',
+  'rgb(var(--cpu))', // green
+  'rgb(var(--ram))', // blue
+  'rgb(var(--gpu))', // purple
+  'rgb(var(--net))', // orange
+  'rgb(var(--ssd))', // teal
+  'rgb(var(--warning))', // yellow
+  'rgb(var(--danger))', // red — backstop, only reached under heavy contention
 ];
+const MAX_SHOWN = PALETTE.length;
 const OTHER_COLOR = 'rgb(var(--fill) / 0.35)';
 
 function shortName(name: string): string {
@@ -43,56 +51,106 @@ function shortName(name: string): string {
 }
 
 interface StreamState {
+  // Persistent across hover open/close (lives for the column's lifetime) so membership
+  // hysteresis, colours and names survive the panel unmounting between hovers.
+  shown: Set<number>; // PIDs currently promoted to their own band
+  outAt: Map<number, number>; // pid -> ms timestamp it last dropped below the promote bar
   colorByPid: Map<number, string>;
-  count: number;
+  names: Map<number, string>; // last-seen short name per pid (kept while a band lingers)
 }
 
-// buildStreams stacks the top processes' contribution to a metric over the history window
-// (plus an aggregated "Other"). Ranking and stack order use each process's SMOOTHED value
-// (mean over the last SMOOTH frames), so membership and order only change on a sustained
-// shift — no flicker on momentary spikes. Per-PID colour persists in `st`, so a process
-// keeps the same colour even after it leaves the named set and returns.
+// buildStreams reconciles which processes get their own band (membership) and renders the
+// stacked history for them plus an aggregated "Other".
+//
+// Membership uses asymmetric hysteresis: a process is promoted the instant its smoothed
+// value enters the top-N, but is only demoted back into "Other" after it has stayed out of
+// the top-N for DEMOTE_MS continuously — so a borderline process never flickers in/out.
+//
+// Stack ORDER is frozen per hover: `frozenOrder` (null on the first paint of a hover) is
+// kept as-is; demoted bands drop out without disturbing their neighbours and freshly
+// promoted bands are appended on top. The order is only recomputed when a new hover opens
+// (a fresh StreamPanel mount passes null again).
 function buildStreams(
   history: Process[][],
   get: (p: Process) => number,
   st: StreamState,
-): { series: StreamSeries[]; legend: { label: string; color: string }[] } {
-  if (history.length === 0) return { series: [], legend: [] };
+  frozenOrder: number[] | null,
+  now: number,
+): { series: StreamSeries[]; legend: { label: string; color: string }[]; order: number[] } {
+  if (history.length === 0) return { series: [], legend: [], order: [] };
 
-  const window = history.slice(-SMOOTH);
+  // Smoothed value per pid over the last SMOOTH frames → denoised ranking and promote set.
+  const win = history.slice(-SMOOTH);
   const sum = new Map<number, number>();
-  const nameByPid = new Map<number, string>();
-  for (const frame of window) {
+  for (const frame of win)
     for (const p of frame) {
       sum.set(p.pid, (sum.get(p.pid) ?? 0) + get(p));
-      nameByPid.set(p.pid, shortName(p.name)); // latest frame wins
+      st.names.set(p.pid, shortName(p.name)); // latest name wins; kept for lingering bands
     }
-  }
   const ranked = [...sum.entries()]
-    .map(([pid, total]) => [pid, total / window.length] as const)
+    .map(([pid, total]) => [pid, total / win.length] as const)
     .filter(([, avg]) => avg > 0)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, TOP_N);
-  if (ranked.length === 0) return { series: [], legend: [] };
+    .sort((a, b) => b[1] - a[1]);
+  const avg = new Map<number, number>(ranked);
+  const promote = new Set(ranked.slice(0, TOP_N).map(([pid]) => pid));
 
-  for (const [pid] of ranked) {
-    if (!st.colorByPid.has(pid)) {
-      st.colorByPid.set(pid, PALETTE[st.count % PALETTE.length]);
-      st.count += 1;
+  // --- Membership hysteresis ---
+  for (const pid of promote) {
+    st.shown.add(pid); // instant promote on crossing the bar
+    st.outAt.delete(pid);
+  }
+  for (const pid of [...st.shown]) {
+    if (promote.has(pid)) continue; // still in range → no demotion timer
+    const since = st.outAt.get(pid);
+    if (since === undefined) st.outAt.set(pid, now); // just dropped out → start the clock
+    else if (now - since >= DEMOTE_MS) {
+      st.shown.delete(pid); // out of the bar long enough → fold back into "Other"
+      st.outAt.delete(pid);
+    }
+  }
+  // Backstop ceiling: never show more bands than the palette has hues; drop the ones
+  // nearest demotion (longest out of the bar) first.
+  if (st.shown.size > MAX_SHOWN) {
+    const out = [...st.shown]
+      .filter((pid) => st.outAt.has(pid))
+      .sort((a, b) => (st.outAt.get(a) ?? 0) - (st.outAt.get(b) ?? 0));
+    for (const pid of out) {
+      if (st.shown.size <= MAX_SHOWN) break;
+      st.shown.delete(pid);
+      st.outAt.delete(pid);
     }
   }
 
-  const shownPids = ranked.map(([pid]) => pid); // sorted by smoothed value, descending
-  const shownSet = new Set(shownPids);
+  // --- Stable, collision-free colours ---
+  // Keep each pid's remembered hue while it is still free, then hand out the rest.
+  const used = new Set<string>();
+  for (const pid of st.shown) {
+    const c = st.colorByPid.get(pid);
+    if (c && !used.has(c)) used.add(c);
+    else st.colorByPid.delete(pid);
+  }
+  for (const pid of st.shown) {
+    if (st.colorByPid.has(pid)) continue;
+    const free = PALETTE.find((c) => !used.has(c)) ?? OTHER_COLOR;
+    st.colorByPid.set(pid, free);
+    used.add(free);
+  }
+
+  // --- Frozen stack order ---
+  // Biggest at the bottom on first paint; thereafter drop gone bands and append newly
+  // promoted ones on top, leaving survivors in place (StreamGraph stacks series[0] first).
+  const byAvgDesc = (a: number, b: number) => (avg.get(b) ?? 0) - (avg.get(a) ?? 0);
+  let order = (frozenOrder ?? [...st.shown].sort(byAvgDesc)).filter((pid) => st.shown.has(pid));
+  const present = new Set(order);
+  order = [...order, ...[...st.shown].filter((pid) => !present.has(pid)).sort(byAvgDesc)];
+
   const maps = history.map((frame) => {
     const m = new Map<number, Process>();
     for (const p of frame) m.set(p.pid, p);
     return m;
   });
-
-  // Biggest smoothed contributor at the bottom (StreamGraph stacks series[0] first).
-  const series: StreamSeries[] = shownPids.map((pid) => ({
-    label: nameByPid.get(pid) ?? String(pid),
+  const series: StreamSeries[] = order.map((pid) => ({
+    label: st.names.get(pid) ?? String(pid),
     color: st.colorByPid.get(pid) ?? OTHER_COLOR,
     data: maps.map((m) => {
       const x = m.get(pid);
@@ -100,6 +158,7 @@ function buildStreams(
     }),
   }));
 
+  const shownSet = new Set(order);
   const other = history.map((frame) => {
     let total = 0;
     for (const p of frame) {
@@ -112,40 +171,56 @@ function buildStreams(
   });
   if (other.some((v) => v > 0)) series.push({ label: 'Other', color: OTHER_COLOR, data: other });
 
-  return { series, legend: series.map((s) => ({ label: s.label, color: s.color })) };
+  return { series, legend: series.map((s) => ({ label: s.label, color: s.color })), order };
 }
 
-// ColumnHover wraps a sortable column header so hovering it reveals a stream graph of
-// the top processes for that metric (and stays open while the pointer is over it). The
-// stream is built lazily — only while the panel is actually open — to keep the live
-// table render cheap (HoverPanel evaluates the panel function only when shown). The
-// per-column StreamState ref keeps process colors/order stable across frames.
-function ColumnHover({ label, history, get }: { label: string; history: Process[][]; get: (p: Process) => number }) {
-  const stateRef = useRef<StreamState>({ colorByPid: new Map(), count: 0 });
+// StreamPanel renders the stream graph for one metric. HoverPanel only mounts it while the
+// panel is open and unmounts it on close, so its `orderRef` (the frozen stack order) is
+// naturally fresh on every hover — the order is snapshotted on the first paint and then
+// held still for the rest of that hover (less visual churn). The hysteresis state `st` is
+// owned by ColumnHover and outlives the panel, so membership/colours carry across hovers.
+function StreamPanel({
+  label,
+  history,
+  get,
+  st,
+}: {
+  label: string;
+  history: Process[][];
+  get: (p: Process) => number;
+  st: StreamState;
+}) {
+  const orderRef = useRef<number[] | null>(null);
+  const { series, legend, order } = buildStreams(history, get, st, orderRef.current, Date.now());
+  orderRef.current = order;
   return (
-    <HoverPanel
-      width={360}
-      panel={() => {
-        const { series, legend } = buildStreams(history, get, stateRef.current);
-        return (
-          <Stack gap={2}>
-            <Text variant="caption" weight="semibold">
-              {label} — top processes (last {HISTORY * 2}s)
-            </Text>
-            {series.length === 0 ? (
-              <Text variant="caption" color="tertiary">
-                No activity recorded yet.
-              </Text>
-            ) : (
-              <>
-                <StreamGraph series={series} height={120} />
-                <Legend items={legend} />
-              </>
-            )}
-          </Stack>
-        );
-      }}
-    >
+    <Stack gap={2}>
+      <Text variant="caption" weight="semibold">
+        {label} — top processes (last {HISTORY * 2}s)
+      </Text>
+      {series.length === 0 ? (
+        <Text variant="caption" color="tertiary">
+          No activity recorded yet.
+        </Text>
+      ) : (
+        <>
+          <StreamGraph series={series} height={120} />
+          <Legend items={legend} />
+        </>
+      )}
+    </Stack>
+  );
+}
+
+// ColumnHover wraps a sortable column header so hovering it reveals a stream graph of the
+// top processes for that metric (and stays open while the pointer is over it). The stream
+// is built lazily — only while the panel is open — to keep the live table render cheap
+// (HoverPanel evaluates the panel function only when shown). The per-column StreamState ref
+// carries membership hysteresis, colours and names across hovers.
+function ColumnHover({ label, history, get }: { label: string; history: Process[][]; get: (p: Process) => number }) {
+  const stateRef = useRef<StreamState>({ shown: new Set(), outAt: new Map(), colorByPid: new Map(), names: new Map() });
+  return (
+    <HoverPanel width={360} panel={() => <StreamPanel label={label} history={history} get={get} st={stateRef.current} />}>
       {label}
     </HoverPanel>
   );
