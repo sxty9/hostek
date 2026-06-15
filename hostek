@@ -334,10 +334,11 @@ write_permissions() {
         },
         {
           "id": "hwdetail",
-          "label": "Identitätsinformationen (sensibel)",
+          "label": "Identitätsinformationen",
           "description": "Sensible Identifikatoren einsehen: Seriennummern und MAC-Adressen.",
           "group": "hp_hostek_hwdetail",
-          "default": false
+          "default": false,
+          "sensitive": true
         },
         {
           "id": "disks",
