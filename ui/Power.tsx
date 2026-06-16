@@ -9,6 +9,7 @@ import {
   StreamGraph,
   Text,
   useLiveQuery,
+  useT,
   type ServiceContextProps,
   type StreamSeries,
 } from '@holistic/ui';
@@ -25,6 +26,7 @@ const watts = (v: number) => `${v.toFixed(1)} W`;
 // PwrLegend is a hoverable legend entry: hovering reveals the component's 1/5/15-min
 // power average (the same windows as the system load average).
 function PwrLegend({ label, color, avg }: { label: string; color: string; avg: Avg }) {
+  const t = useT();
   return (
     <HoverPanel
       width={300}
@@ -33,11 +35,11 @@ function PwrLegend({ label, color, avg }: { label: string; color: string; avg: A
           <Stack direction="row" align="center" gap={1}>
             <Box className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
             <Text variant="caption" weight="semibold">
-              {label} — power average
+              {t('hostek.powerAverage', { label })}
             </Text>
           </Stack>
           <Stack direction="row" gap={5}>
-            {([['1 min', avg.a1], ['5 min', avg.a5], ['15 min', avg.a15]] as const).map(([l, v]) => (
+            {([[t('hostek.avg1'), avg.a1], [t('hostek.avg5'), avg.a5], [t('hostek.avg15'), avg.a15]] as const).map(([l, v]) => (
               <Stack key={l} gap={0}>
                 <Text variant="subhead" weight="semibold" className="tabular-nums">
                   {watts(v)}
@@ -62,6 +64,7 @@ function PwrLegend({ label, color, avg }: { label: string; color: string; avg: A
 }
 
 export function Power({ api }: ServiceContextProps) {
+  const t = useT();
   const { data } = useLiveQuery<PowerResponse>(() => api.get<PowerResponse>('power'), 2000);
 
   if (!data) {
@@ -88,7 +91,7 @@ export function Power({ api }: ServiceContextProps) {
   return (
     <Stack gap={4}>
       <Panel
-        title="Power draw"
+        title={t('hostek.powerDraw')}
         actions={
           <Text variant="title3" weight="semibold" className="tabular-nums">
             {watts(currentTotal)}
@@ -100,8 +103,8 @@ export function Power({ api }: ServiceContextProps) {
           {series.length === 0 ? (
             <EmptyState
               icon={<BoltIcon />}
-              title="No power telemetry"
-              description="Neither CPU (RAPL via hostek-powermon) nor GPU (nvidia-smi) power is available on this host."
+              title={t('hostek.noPowerTelemetry')}
+              description={t('hostek.noPowerDesc')}
             />
           ) : (
             <StreamGraph series={series} height={220} />
@@ -110,12 +113,12 @@ export function Power({ api }: ServiceContextProps) {
           <Stack direction="row" gap={5} wrap>
             <PwrLegend label="CPU" color={C.cpu} avg={data.avg.cpu} />
             <PwrLegend label="GPU" color={C.gpu} avg={data.avg.gpu} />
-            <PwrLegend label="Total" color={C.total} avg={data.avg.total} />
+            <PwrLegend label={t('hostek.total')} color={C.total} avg={data.avg.total} />
           </Stack>
 
           {!data.cpuAvailable && (
             <Text variant="caption" color="tertiary">
-              CPU power reads 0 until the privileged RAPL helper (hostek-powermon) is installed and RAPL is available.
+              {t('hostek.cpuPowerNote')}
             </Text>
           )}
         </Stack>

@@ -17,6 +17,7 @@ import {
   cn,
   formatBytes,
   useLiveQuery,
+  useT,
   type ServiceContextProps,
 } from '@holistic/ui';
 import type { ReactNode } from 'react';
@@ -75,6 +76,7 @@ function CompCard({
 }
 
 export function System({ api }: ServiceContextProps) {
+  const t = useT();
   // The hardware route carries static specs AND embedded live values (clocks/temps),
   // so non-admins can use this tab without access to the admin-only summary route.
   const { data: hw } = useLiveQuery<HardwareInfo>(() => api.get<HardwareInfo>('hardware'), 3000);
@@ -98,26 +100,26 @@ export function System({ api }: ServiceContextProps) {
       <CompCard
         icon={<CpuIcon className="h-5 w-5 text-cpu" />}
         tileClass="bg-cpu/15"
-        title={cpu.model || 'Processor'}
-        subtitle={join(cpu.vendor, cpu.socket && `Socket ${cpu.socket}`)}
+        title={cpu.model || t('hostek.processor')}
+        subtitle={join(cpu.vendor, cpu.socket && `${t('hostek.socket')} ${cpu.socket}`)}
       >
-        <Spec label="Cores / Threads" value={cpu.cores ? `${cpu.cores} / ${cpu.threads ?? '?'}` : undefined} />
-        <Spec label="Base clock" value={mhz(cpu.baseClockMhz)} />
-        <Spec label="Max clock" value={mhz(cpu.maxClockMhz)} />
-        <Spec label="Current clock" value={mhz(cpu.curClockMhz)} />
-        <Spec label="Temperature" value={degC(cpu.tempC)} />
-        <Spec label="L1 cache" value={cpu.cacheL1} />
-        <Spec label="L2 cache" value={cpu.cacheL2} />
-        <Spec label="L3 cache" value={cpu.cacheL3} />
-        <Spec label="Family" value={cpu.family} />
+        <Spec label={t('hostek.coresThreads')} value={cpu.cores ? `${cpu.cores} / ${cpu.threads ?? '?'}` : undefined} />
+        <Spec label={t('hostek.baseClock')} value={mhz(cpu.baseClockMhz)} />
+        <Spec label={t('hostek.maxClock')} value={mhz(cpu.maxClockMhz)} />
+        <Spec label={t('hostek.currentClock')} value={mhz(cpu.curClockMhz)} />
+        <Spec label={t('hostek.temperature')} value={degC(cpu.tempC)} />
+        <Spec label={t('hostek.l1cache')} value={cpu.cacheL1} />
+        <Spec label={t('hostek.l2cache')} value={cpu.cacheL2} />
+        <Spec label={t('hostek.l3cache')} value={cpu.cacheL3} />
+        <Spec label={t('hostek.family')} value={cpu.family} />
       </CompCard>
 
       {/* Memory */}
       <CompCard
         icon={<MemoryIcon className="h-5 w-5 text-ram" />}
         tileClass="bg-ram/15"
-        title={mem.totalBytes ? `${formatBytes(mem.totalBytes)} RAM` : 'Memory'}
-        subtitle={mem.modules?.length ? `${mem.modules.length} module${mem.modules.length > 1 ? 's' : ''}` : undefined}
+        title={mem.totalBytes ? `${formatBytes(mem.totalBytes)} RAM` : t('hostek.memory')}
+        subtitle={mem.modules?.length ? t('hostek.moduleCount', { count: mem.modules.length }) : undefined}
       >
         {mem.modules?.length ? (
           mem.modules.map((m, i) => (
@@ -137,7 +139,7 @@ export function System({ api }: ServiceContextProps) {
           ))
         ) : (
           <Text variant="footnote" color="secondary">
-            Module details unavailable
+            {t('hostek.moduleDetailsUnavailable')}
           </Text>
         )}
       </CompCard>
@@ -148,15 +150,15 @@ export function System({ api }: ServiceContextProps) {
           key={i}
           icon={<GpuIcon className="h-5 w-5 text-gpu" />}
           tileClass="bg-gpu/15"
-          title={g.name || 'Graphics'}
-          subtitle={join(g.driver && `Driver ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
+          title={g.name || t('hostek.graphics')}
+          subtitle={join(g.driver && `${t('hostek.driver')} ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
         >
           <Spec label="VRAM" value={g.memTotalBytes ? formatBytes(g.memTotalBytes) : undefined} />
-          <Spec label="Base clock" value={mhz(g.baseClockMhz)} />
-          <Spec label="Boost clock" value={mhz(g.boostClockMhz)} />
-          <Spec label="Current clock" value={mhz(g.curClockMhz)} />
-          <Spec label="Memory clock" value={mhz(g.memClockMhz || g.memMaxClockMhz)} />
-          <Spec label="Temperature" value={degC(g.tempC)} />
+          <Spec label={t('hostek.baseClock')} value={mhz(g.baseClockMhz)} />
+          <Spec label={t('hostek.boostClock')} value={mhz(g.boostClockMhz)} />
+          <Spec label={t('hostek.currentClock')} value={mhz(g.curClockMhz)} />
+          <Spec label={t('hostek.memoryClock')} value={mhz(g.memClockMhz || g.memMaxClockMhz)} />
+          <Spec label={t('hostek.temperature')} value={degC(g.tempC)} />
         </CompCard>
       ))}
 
@@ -164,30 +166,30 @@ export function System({ api }: ServiceContextProps) {
       <CompCard
         icon={<MotherboardIcon className="h-5 w-5 text-text-secondary" />}
         tileClass="bg-fill/15"
-        title={join(board.manufacturer, board.model) || 'Mainboard'}
+        title={join(board.manufacturer, board.model) || t('hostek.mainboard')}
         subtitle={board.version || undefined}
       >
-        <Spec label="BIOS vendor" value={board.biosVendor} />
-        <Spec label="BIOS version" value={board.biosVersion} />
-        <Spec label="BIOS date" value={board.biosDate} />
+        <Spec label={t('hostek.biosVendor')} value={board.biosVendor} />
+        <Spec label={t('hostek.biosVersion')} value={board.biosVersion} />
+        <Spec label={t('hostek.biosDate')} value={board.biosDate} />
       </CompCard>
 
       {/* System SSD */}
       <CompCard
         icon={<SsdIcon className="h-5 w-5 text-ssd" />}
         tileClass="bg-ssd/15"
-        title={disk.model || disk.device || 'System disk'}
+        title={disk.model || disk.device || t('hostek.systemDisk')}
         subtitle={join(disk.type, disk.device && `/dev/${disk.device}`)}
       >
-        <Spec label="Capacity" value={disk.sizeBytes ? formatBytes(disk.sizeBytes) : undefined} />
+        <Spec label={t('hostek.capacity')} value={disk.sizeBytes ? formatBytes(disk.sizeBytes) : undefined} />
         <Spec
-          label="Health"
+          label={t('hostek.health')}
           value={disk.health ? <Badge variant={disk.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{disk.health}</Badge> : undefined}
         />
-        <Spec label="Temperature" value={degC(disk.tempC)} />
-        <Spec label="Power-on hours" value={disk.powerOnHours ? disk.powerOnHours.toLocaleString() : undefined} />
-        <Spec label="Firmware" value={disk.firmware} />
-        <Spec label="Serial" value={disk.serial} />
+        <Spec label={t('hostek.temperature')} value={degC(disk.tempC)} />
+        <Spec label={t('hostek.powerOnHours')} value={disk.powerOnHours ? disk.powerOnHours.toLocaleString() : undefined} />
+        <Spec label={t('hostek.firmware')} value={disk.firmware} />
+        <Spec label={t('hostek.serial')} value={disk.serial} />
       </CompCard>
 
       {/* Network interface(s) */}
@@ -196,13 +198,13 @@ export function System({ api }: ServiceContextProps) {
           key={i}
           icon={<EthernetIcon className="h-5 w-5 text-net" />}
           tileClass="bg-net/15"
-          title={n.model || n.name || 'Network'}
+          title={n.model || n.name || t('hostek.network')}
           subtitle={n.name && n.model ? n.name : undefined}
         >
-          <Spec label="Link" value={n.link ? <Badge variant={n.link === 'up' ? 'success' : 'neutral'}>{n.link}</Badge> : undefined} />
-          <Spec label="Speed" value={n.speedMbps && n.speedMbps > 0 ? `${n.speedMbps} Mbps` : undefined} />
-          <Spec label="Driver" value={n.driver} />
-          <Spec label="MAC" value={n.mac} />
+          <Spec label={t('hostek.link')} value={n.link ? <Badge variant={n.link === 'up' ? 'success' : 'neutral'}>{n.link}</Badge> : undefined} />
+          <Spec label={t('hostek.speed')} value={n.speedMbps && n.speedMbps > 0 ? `${n.speedMbps} Mbps` : undefined} />
+          <Spec label={t('hostek.driver')} value={n.driver} />
+          <Spec label={t('hostek.mac')} value={n.mac} />
         </CompCard>
       ))}
     </Grid>

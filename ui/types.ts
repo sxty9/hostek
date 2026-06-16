@@ -274,5 +274,6 @@ export interface PowerState {
   headless: boolean;
   lidIgnore: boolean;
   suspendMasked: boolean;
+  tmuxPersist: boolean;
   biosAutoPowerOn: BiosNote;
 }

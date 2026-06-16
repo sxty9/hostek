@@ -15,6 +15,7 @@ import {
   formatDuration,
   formatRate,
   useLiveQuery,
+  useT,
   type ChartSeries,
   type ServiceContextProps,
 } from '@holistic/ui';
@@ -46,9 +47,10 @@ function HoverTitle({ color, label }: { color: string; label: string }) {
 
 // AvgRow shows a component's 1/5/15-min average (the per-component load average).
 function AvgRow({ avg, fmt }: { avg: Avg; fmt: (v: number) => string }) {
+  const t = useT();
   return (
     <Stack direction="row" gap={5}>
-      {([['1 min', avg.a1], ['5 min', avg.a5], ['15 min', avg.a15]] as const).map(([l, v]) => (
+      {([[t('hostek.avg1'), avg.a1], [t('hostek.avg5'), avg.a5], [t('hostek.avg15'), avg.a15]] as const).map(([l, v]) => (
         <Stack key={l} gap={0}>
           <Text variant="subhead" weight="semibold" className="tabular-nums">
             {fmt(v)}
@@ -86,6 +88,7 @@ function MiniChart({ label, color, lines, percent, caption }: { label: string; c
 }
 
 export function Performance({ api }: ServiceContextProps) {
+  const t = useT();
   const { data: s } = useLiveQuery<Summary>(() => api.get<Summary>('summary'), 2000);
   const { data: series } = useLiveQuery<SeriesResponse>(() => api.get<SeriesResponse>('metrics'), 2000);
 
@@ -122,28 +125,28 @@ export function Performance({ api }: ServiceContextProps) {
 
   const combined: ChartSeries[] = [
     { data: cpuSeries, label: 'CPU', color: C.cpu },
-    { data: memSeries, label: 'Memory', color: C.ram },
+    { data: memSeries, label: t('hostek.memory'), color: C.ram },
     ...(hasGpu ? [{ data: gpuSeries, label: 'GPU', color: C.gpu }] : []),
     { data: ssdBusySeries, label: 'SSD', color: C.ssd },
-    { data: netNorm, label: 'Network', color: C.net },
+    { data: netNorm, label: t('hostek.network'), color: C.net },
   ];
   const legend = [
     { label: 'CPU', color: C.cpu },
-    { label: 'Memory', color: C.ram },
+    { label: t('hostek.memory'), color: C.ram },
     ...(hasGpu ? [{ label: 'GPU', color: C.gpu }] : []),
-    { label: 'SSD (active)', color: C.ssd },
-    { label: 'Network (relative)', color: C.net },
+    { label: t('hostek.ssdActive'), color: C.ssd },
+    { label: t('hostek.networkRelative'), color: C.net },
   ];
 
   // Tile hover panels (built lazily, only while the panel is open).
   const cpuPanel = () => (
     <Stack gap={3}>
-      <HoverTitle color={C.cpu} label="CPU — per-core load & average" />
+      <HoverTitle color={C.cpu} label={t('hostek.cpuPanelTitle')} />
       <Grid minItemWidth={84} gap={2}>
         {s.perCpu.map((p, i) => (
           <Stack key={i} gap={1}>
             <Text variant="caption" color="secondary">
-              Core {i}
+              {t('hostek.coreN', { n: i })}
             </Text>
             <ProgressBar value={p} tone="cpu" />
           </Stack>
@@ -156,14 +159,14 @@ export function Performance({ api }: ServiceContextProps) {
 
   const gpuPanel = () => (
     <Stack gap={3}>
-      <HoverTitle color={C.gpu} label="GPU — VRAM, utilization & average" />
+      <HoverTitle color={C.gpu} label={t('hostek.gpuPanelTitle')} />
       {gpus.map((g, i) => {
         const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : ''].filter(Boolean).join(' · ');
         return (
           <Stack key={i} gap={1}>
             <Stack direction="row" justify="between" gap={2}>
               <Text variant="caption" color="secondary">
-                GPU {g.index} · {g.utilPercent.toFixed(0)}% util
+                {t('hostek.gpuUtil', { index: g.index, pct: g.utilPercent.toFixed(0) })}
               </Text>
               {tp && (
                 <Text variant="caption" color="secondary">
@@ -205,9 +208,9 @@ export function Performance({ api }: ServiceContextProps) {
           width={300}
           panel={simplePanel(
             C.ram,
-            'Memory',
+            t('hostek.memory'),
             <Text variant="caption" color="secondary">
-              {formatBytes(s.memUsed)} / {formatBytes(s.memTotal)} · {formatBytes(s.memCached)} cached
+              {formatBytes(s.memUsed)} / {formatBytes(s.memTotal)} · {formatBytes(s.memCached)} {t('hostek.cached')}
             </Text>,
             L.mem,
             pct,
@@ -215,7 +218,7 @@ export function Performance({ api }: ServiceContextProps) {
         >
           <Stat
             className="h-full"
-            label="Memory"
+            label={t('hostek.memory')}
             value={s.memPercent}
             unit="%"
             footer={
@@ -253,7 +256,7 @@ export function Performance({ api }: ServiceContextProps) {
           width={300}
           panel={simplePanel(
             C.ssd,
-            'System SSD',
+            t('hostek.systemSsd'),
             <Text variant="caption" color="secondary">
               {s.sysDiskBusyPercent}% active · ↓ {formatRate(s.sysDiskReadRate)} · ↑ {formatRate(s.sysDiskWriteRate)}
             </Text>,
@@ -282,7 +285,7 @@ export function Performance({ api }: ServiceContextProps) {
           width={300}
           panel={simplePanel(
             C.net,
-            'Network',
+            t('hostek.network'),
             <Text variant="caption" color="secondary">
               ↓ {formatRate(s.netRxRate)} · ↑ {formatRate(s.netTxRate)}
             </Text>,
@@ -292,7 +295,7 @@ export function Performance({ api }: ServiceContextProps) {
         >
           <Stat
             className="h-full"
-            label="Network"
+            label={t('hostek.network')}
             value={formatRate(s.netRxRate)}
             footer={
               <Text variant="caption" color="secondary">
@@ -304,7 +307,7 @@ export function Performance({ api }: ServiceContextProps) {
       </Grid>
 
       {/* Combined history with legend */}
-      <Panel title="History — utilization" className="p-4">
+      <Panel title={t('hostek.historyUtilization')} className="p-4">
         <Stack gap={2}>
           <Legend items={legend} />
           <LineChart series={combined} min={0} max={100} height={170} />
@@ -314,7 +317,7 @@ export function Performance({ api }: ServiceContextProps) {
       {/* Per-component detail graphs */}
       <Grid minItemWidth={260} gap={3}>
         <MiniChart label="CPU" color={C.cpu} percent caption={`${s.cpuPercent}%`} lines={[{ data: cpuSeries, color: C.cpu, fill: true }]} />
-        <MiniChart label="Memory" color={C.ram} percent caption={`${s.memPercent}%`} lines={[{ data: memSeries, color: C.ram, fill: true }]} />
+        <MiniChart label={t('hostek.memory')} color={C.ram} percent caption={`${s.memPercent}%`} lines={[{ data: memSeries, color: C.ram, fill: true }]} />
         {hasGpu && <MiniChart label="GPU" color={C.gpu} percent caption={`${gpuPct}%`} lines={[{ data: gpuSeries, color: C.gpu, fill: true }]} />}
         <MiniChart
           label="SSD"
@@ -326,7 +329,7 @@ export function Performance({ api }: ServiceContextProps) {
           ]}
         />
         <MiniChart
-          label="Network"
+          label={t('hostek.network')}
           color={C.net}
           caption={`↓ ${formatRate(s.netRxRate)} · ↑ ${formatRate(s.netTxRate)}`}
           lines={[
@@ -339,7 +342,7 @@ export function Performance({ api }: ServiceContextProps) {
       {/* Uptime / process count */}
       <Panel className="px-4 py-3">
         <Text variant="footnote" color="secondary">
-          Uptime {formatDuration(s.uptime)} · {s.procs} processes
+          {t('hostek.uptimeProcs', { uptime: formatDuration(s.uptime), procs: s.procs })}
         </Text>
       </Panel>
     </Stack>

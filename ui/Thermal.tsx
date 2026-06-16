@@ -13,6 +13,7 @@ import {
   ThermometerIcon,
   toast,
   useLiveQuery,
+  useT,
   type ServiceContextProps,
 } from '@holistic/ui';
 import type { ThermalResponse, ThermalSample } from './types';
@@ -43,6 +44,7 @@ function buildSeries(samples: ThermalSample[], key: string): number[] {
 // a component reaches its critical limit (with hysteresis so it fires once per episode).
 // Mounted at the dashboard level so the warning fires regardless of the active tab.
 export function ThermalWatcher({ api }: ServiceContextProps) {
+  const t = useT();
   const { data } = useLiveQuery<ThermalResponse>(() => api.get<ThermalResponse>('thermal'), 5000);
   const alarmed = useRef<Set<string>>(new Set());
 
@@ -50,23 +52,28 @@ export function ThermalWatcher({ api }: ServiceContextProps) {
     if (!data?.samples?.length) return;
     const last = data.samples[data.samples.length - 1].temps;
     for (const c of data.components) {
-      const t = last[c.key];
-      if (t == null) continue;
-      if (t >= c.criticalC) {
+      const temp = last[c.key];
+      if (temp == null) continue;
+      if (temp >= c.criticalC) {
         if (!alarmed.current.has(c.key)) {
           alarmed.current.add(c.key);
-          toast({ variant: 'error', title: `${c.label} critical temperature`, description: `${Math.round(t)} °C ≥ ${Math.round(c.criticalC)} °C critical` });
+          toast({
+            variant: 'error',
+            title: t('hostek.criticalTempTitle', { label: c.label }),
+            description: t('hostek.criticalTempDesc', { temp: Math.round(temp), crit: Math.round(c.criticalC) }),
+          });
         }
-      } else if (t < c.criticalC - 3) {
+      } else if (temp < c.criticalC - 3) {
         alarmed.current.delete(c.key); // re-arm once it cools 3 °C below critical
       }
     }
-  }, [data]);
+  }, [data, t]);
 
   return null;
 }
 
 export function Thermal({ api }: ServiceContextProps) {
+  const t = useT();
   const { data } = useLiveQuery<ThermalResponse>(() => api.get<ThermalResponse>('thermal'), 2000);
 
   if (!data) {
@@ -80,7 +87,7 @@ export function Thermal({ api }: ServiceContextProps) {
   const samples = data.samples ?? [];
   const components = data.components ?? [];
   if (components.length === 0) {
-    return <EmptyState icon={<ThermometerIcon />} title="No temperature sensors" description="No temperature-measurable components were detected." />;
+    return <EmptyState icon={<ThermometerIcon />} title={t('hostek.noTempSensors')} description={t('hostek.noTempSensorsDesc')} />;
   }
 
   return (
@@ -104,7 +111,7 @@ export function Thermal({ api }: ServiceContextProps) {
                   <Text variant="subhead" weight="semibold" className="tabular-nums">
                     {Math.round(cur)} °C
                   </Text>
-                  {overCritical && <Badge variant="danger">critical</Badge>}
+                  {overCritical && <Badge variant="danger">{t('hostek.critical')}</Badge>}
                 </Stack>
               </Stack>
               <LineChart
@@ -115,7 +122,7 @@ export function Thermal({ api }: ServiceContextProps) {
                 refLines={[{ value: c.criticalC }]}
               />
               <Text variant="caption" color="tertiary">
-                critical {Math.round(c.criticalC)} °C
+                {t('hostek.criticalCaption', { crit: Math.round(c.criticalC) })}
               </Text>
             </Stack>
           </Panel>

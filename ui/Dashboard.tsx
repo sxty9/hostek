@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ContentRegion, SegmentedControl, Stack, userHasRight, type SegmentedOption, type ServiceContextProps } from '@holistic/ui';
+import { ContentRegion, SegmentedControl, Stack, useT, userHasRight, type SegmentedOption, type ServiceContextProps } from '@holistic/ui';
 import { System } from './System';
 import { Performance } from './Performance';
 import { Power } from './Power';
@@ -12,6 +12,7 @@ type Tab = 'system' | 'performance' | 'power' | 'thermal' | 'config' | 'disks' |
 
 export function Dashboard(props: ServiceContextProps) {
   const { user } = props;
+  const t = useT();
   const [tab, setTab] = useState<Tab>('system');
 
   // Everyone (read-only) sees System and Performance (without temperatures/power). Power
@@ -27,14 +28,14 @@ export function Dashboard(props: ServiceContextProps) {
 
   // Order: System · Performance · Power · Thermal · Processes · Disks · Config.
   const options: SegmentedOption<Tab>[] = [
-    { value: 'system', label: 'System' },
-    { value: 'performance', label: 'Performance' },
+    { value: 'system', label: t('hostek.tabSystem') },
+    { value: 'performance', label: t('hostek.tabPerformance') },
   ];
-  if (canPowerInfo) options.push({ value: 'power', label: 'Power' });
-  if (canThermal) options.push({ value: 'thermal', label: 'Thermal' });
-  if (canProc) options.push({ value: 'processes', label: 'Processes' });
-  if (canDisks) options.push({ value: 'disks', label: 'Disks' });
-  if (canPower) options.push({ value: 'config', label: 'Config' });
+  if (canPowerInfo) options.push({ value: 'power', label: t('hostek.tabPower') });
+  if (canThermal) options.push({ value: 'thermal', label: t('hostek.tabThermal') });
+  if (canProc) options.push({ value: 'processes', label: t('hostek.tabProcesses') });
+  if (canDisks) options.push({ value: 'disks', label: t('hostek.tabDisks') });
+  if (canPower) options.push({ value: 'config', label: t('hostek.tabConfig') });
 
   return (
     <ContentRegion>

@@ -1,7 +1,9 @@
-// Package sysconfig reads and applies OS-level "headless / always-on" power settings.
-// Reads are best-effort and Linux-only; writes go through the privileged sudo wrapper
-// /usr/local/sbin/hostek-power-set. The BIOS "Restore AC Power Loss" setting is
-// firmware-level (not writable from the OS) and surfaced as read-only information.
+// Package sysconfig reads and applies OS-level server-autonomy settings: the
+// "headless / always-on" power config and tmux-backed SSH session persistence.
+// Reads are best-effort and Linux-only; writes go through the privileged sudo
+// wrappers /usr/local/sbin/hostek-power-set and /usr/local/sbin/hostek-tmux-set.
+// The BIOS "Restore AC Power Loss" setting is firmware-level (not writable from
+// the OS) and surfaced as read-only information.
 package sysconfig
 
 import (
@@ -14,7 +16,12 @@ import (
 	"strings"
 )
 
-const wrapper = "/usr/local/sbin/hostek-power-set"
+const (
+	wrapper     = "/usr/local/sbin/hostek-power-set"
+	tmuxWrapper = "/usr/local/sbin/hostek-tmux-set"
+	// profile.d snippet the tmux wrapper installs; its presence is the on/off state.
+	tmuxProfile = "/etc/profile.d/hostek-tmux.sh"
+)
 
 // BiosNote is the informational firmware setting (already configured in UEFI).
 type BiosNote struct {
@@ -23,13 +30,15 @@ type BiosNote struct {
 	Note    string `json:"note"`
 }
 
-// PowerState is the current headless/always-on OS configuration.
+// PowerState is the current server-autonomy OS configuration: headless/always-on
+// power plus tmux-backed SSH session persistence.
 type PowerState struct {
 	Platform        string   `json:"platform"`
 	Supported       bool     `json:"supported"`
 	Headless        bool     `json:"headless"`
 	LidIgnore       bool     `json:"lidIgnore"`
 	SuspendMasked   bool     `json:"suspendMasked"`
+	TmuxPersist     bool     `json:"tmuxPersist"`
 	BiosAutoPowerOn BiosNote `json:"biosAutoPowerOn"`
 }
 
@@ -51,7 +60,15 @@ func Read() PowerState {
 	st.SuspendMasked = sleepMasked()
 	st.LidIgnore = lidIgnore()
 	st.Headless = st.SuspendMasked && st.LidIgnore
+	st.TmuxPersist = tmuxPersist()
 	return st
+}
+
+// tmuxPersist reports whether interactive SSH logins are routed into a persistent
+// tmux session. The profile.d snippet installed by the wrapper is the source of truth.
+func tmuxPersist() bool {
+	_, err := os.Stat(tmuxProfile)
+	return err == nil
 }
 
 func sleepMasked() bool {
@@ -77,14 +94,25 @@ func lidIgnore() bool {
 
 // Apply turns headless/always-on OS settings on or off via the privileged wrapper.
 func Apply(headless bool) error {
+	return runWrapper(wrapper, headless)
+}
+
+// ApplyTmux turns tmux-backed SSH session persistence on or off via the privileged
+// wrapper (installs/removes the /etc/profile.d snippet).
+func ApplyTmux(persist bool) error {
+	return runWrapper(tmuxWrapper, persist)
+}
+
+// runWrapper invokes a privileged on|off wrapper via `sudo -n`, surfacing its stderr.
+func runWrapper(path string, on bool) error {
 	if runtime.GOOS != "linux" {
-		return errors.New("power configuration is only supported on Linux")
+		return errors.New("system configuration is only supported on Linux")
 	}
 	arg := "off"
-	if headless {
+	if on {
 		arg = "on"
 	}
-	cmd := exec.Command("sudo", "-n", wrapper, arg)
+	cmd := exec.Command("sudo", "-n", path, arg)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

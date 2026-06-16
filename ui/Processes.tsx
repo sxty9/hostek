@@ -12,6 +12,7 @@ import {
   formatBytes,
   formatRate,
   useLiveQuery,
+  useT,
   type Column,
   type ServiceContextProps,
   type StreamSeries,
@@ -190,17 +191,18 @@ function StreamPanel({
   get: (p: Process) => number;
   st: StreamState;
 }) {
+  const t = useT();
   const orderRef = useRef<number[] | null>(null);
   const { series, legend, order } = buildStreams(history, get, st, orderRef.current, Date.now());
   orderRef.current = order;
   return (
     <Stack gap={2}>
       <Text variant="caption" weight="semibold">
-        {label} — top processes (last {HISTORY * 2}s)
+        {t('hostek.topProcesses', { label, secs: HISTORY * 2 })}
       </Text>
       {series.length === 0 ? (
         <Text variant="caption" color="tertiary">
-          No activity recorded yet.
+          {t('hostek.noActivity')}
         </Text>
       ) : (
         <>
@@ -227,6 +229,7 @@ function ColumnHover({ label, history, get }: { label: string; history: Process[
 }
 
 export function Processes({ api }: ServiceContextProps) {
+  const t = useT();
   const { data } = useLiveQuery<ProcessesResponse>(() => api.get<ProcessesResponse>('processes'), 2000);
   const [q, setQ] = useState('');
   const [history, setHistory] = useState<Process[][]>([]);
@@ -251,8 +254,8 @@ export function Processes({ api }: ServiceContextProps) {
   const columns = useMemo<Column<Process>[]>(
     () => [
     { key: 'pid', header: 'PID', align: 'right', sortable: true, sortValue: (p) => p.pid, width: 72 },
-    { key: 'name', header: 'Name', sortable: true, sortValue: (p) => p.name.toLowerCase(), hideable: false },
-    { key: 'user', header: 'User', sortable: true, sortValue: (p) => p.user, width: 120 },
+    { key: 'name', header: t('hostek.colName'), sortable: true, sortValue: (p) => p.name.toLowerCase(), hideable: false },
+    { key: 'user', header: t('hostek.colUser'), sortable: true, sortValue: (p) => p.user, width: 120 },
     {
       key: 'cpu',
       header: <ColumnHover label="CPU %" history={history} get={(p) => p.cpuPercent} />,
@@ -265,15 +268,15 @@ export function Processes({ api }: ServiceContextProps) {
     },
     {
       key: 'mem',
-      header: <ColumnHover label="Memory" history={history} get={(p) => p.memRss} />,
-      toggleLabel: 'Memory',
+      header: <ColumnHover label={t('hostek.memory')} history={history} get={(p) => p.memRss} />,
+      toggleLabel: t('hostek.memory'),
       align: 'right',
       sortable: true,
       sortValue: (p) => p.memRss,
       render: (p) => formatBytes(p.memRss),
       width: 100,
     },
-    { key: 'memPct', header: 'Mem %', align: 'right', sortable: true, sortValue: (p) => p.memPercent, render: (p) => p.memPercent.toFixed(1), width: 80, defaultHidden: true },
+    { key: 'memPct', header: t('hostek.colMemPct'), align: 'right', sortable: true, sortValue: (p) => p.memPercent, render: (p) => p.memPercent.toFixed(1), width: 80, defaultHidden: true },
     {
       key: 'gpu',
       header: <ColumnHover label="GPU %" history={history} get={(p) => p.gpuPercent} />,
@@ -286,7 +289,7 @@ export function Processes({ api }: ServiceContextProps) {
     },
     {
       key: 'gpuEngine',
-      header: 'GPU engine',
+      header: t('hostek.colGpuEngine'),
       sortable: true,
       sortValue: (p) => p.gpuEngine ?? '',
       render: (p) => p.gpuEngine || '—',
@@ -295,8 +298,8 @@ export function Processes({ api }: ServiceContextProps) {
     },
     {
       key: 'net',
-      header: <ColumnHover label="Network" history={history} get={(p) => p.netRxRate + p.netTxRate} />,
-      toggleLabel: 'Network',
+      header: <ColumnHover label={t('hostek.network')} history={history} get={(p) => p.netRxRate + p.netTxRate} />,
+      toggleLabel: t('hostek.network'),
       align: 'right',
       sortable: true,
       sortValue: (p) => p.netRxRate + p.netTxRate,
@@ -310,18 +313,18 @@ export function Processes({ api }: ServiceContextProps) {
         ),
       width: 168,
     },
-    { key: 'status', header: 'Status', render: (p) => <Badge variant="neutral">{p.status || '—'}</Badge>, width: 100, defaultHidden: true },
+    { key: 'status', header: t('hostek.colStatus'), render: (p) => <Badge variant="neutral">{p.status || '—'}</Badge>, width: 100, defaultHidden: true },
     ],
-    [history],
+    [history, t],
   );
 
   return (
     <Stack gap={3}>
       <Stack direction="row" align="center" justify="between" gap={3}>
         <Text variant="subhead" weight="semibold">
-          {rows.length} processes
+          {t('hostek.procCount', { count: rows.length })}
         </Text>
-        <SearchField value={q} onChange={setQ} placeholder="Filter by name, user or PID" />
+        <SearchField value={q} onChange={setQ} placeholder={t('hostek.filterProcs')} />
       </Stack>
       <DataTable
         columns={columns}
@@ -330,7 +333,7 @@ export function Processes({ api }: ServiceContextProps) {
         initialSort={{ key: 'cpu', dir: 'desc' }}
         maxHeight={560}
         columnToggle
-        emptyState={<EmptyState title="No processes" description="Nothing matches your filter." />}
+        emptyState={<EmptyState title={t('hostek.noProcs')} description={t('hostek.noProcsDesc')} />}
       />
     </Stack>
   );

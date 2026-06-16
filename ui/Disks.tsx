@@ -13,6 +13,7 @@ import {
   Text,
   formatBytes,
   useLiveQuery,
+  useT,
   type ServiceContextProps,
 } from '@holistic/ui';
 import type { DiskDevice, DisksResponse } from './types';
@@ -20,6 +21,7 @@ import type { DiskDevice, DisksResponse } from './types';
 const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ');
 
 function DiskCard({ d }: { d: DiskDevice }) {
+  const t = useT();
   const mounts = (d.partitions ?? []).filter((p) => p.mount);
   // Usage is filesystem-level (sum over mounted partitions) so the donut tracks the
   // partition rows below; fall back to the raw device size when nothing is mounted.
@@ -43,7 +45,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
           <Stack gap={0} className="min-w-0 grow">
             <Stack direction="row" align="center" gap={2}>
               <Marquee text={d.model || d.name} className="min-w-0 grow text-subhead font-semibold text-text-primary" />
-              {d.isSystem && <Badge variant="accent">System</Badge>}
+              {d.isSystem && <Badge variant="accent">{t('hostek.systemBadge')}</Badge>}
               {d.type && <Badge variant="neutral">{d.type}</Badge>}
             </Stack>
             <Marquee text={subtitle} className="text-caption text-text-secondary" />
@@ -64,12 +66,12 @@ function DiskCard({ d }: { d: DiskDevice }) {
                     {usedPct.toFixed(0)}%
                   </Text>
                   <Text variant="caption" color="tertiary">
-                    used
+                    {t('hostek.usedShort')}
                   </Text>
                 </Stack>
               ) : (
                 <Text variant="caption" color="tertiary">
-                  free
+                  {t('hostek.freeShort')}
                 </Text>
               )
             }
@@ -77,7 +79,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
           <Stack gap={1} grow className="min-w-0">
             <Stack direction="row" justify="between" gap={2} align="baseline">
               <Text variant="footnote" color="secondary">
-                Capacity
+                {t('hostek.capacity')}
               </Text>
               <Text variant="footnote" weight="medium" className="tabular-nums">
                 {formatBytes(d.sizeBytes)}
@@ -85,7 +87,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
             </Stack>
             <Stack direction="row" justify="between" gap={2} align="baseline">
               <Text variant="footnote" color="secondary">
-                Used
+                {t('hostek.used')}
               </Text>
               <Text variant="footnote" className="tabular-nums">
                 {hasUsage ? `${formatBytes(fsUsed)} · ${usedPct.toFixed(0)}%` : '—'}
@@ -93,7 +95,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
             </Stack>
             <Stack direction="row" justify="between" gap={2} align="baseline">
               <Text variant="footnote" color="secondary">
-                Free
+                {t('hostek.free')}
               </Text>
               <Text variant="footnote" className="tabular-nums">
                 {formatBytes(Math.max(0, total - fsUsed))}
@@ -108,7 +110,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
             {d.health && (
               <Stack direction="row" justify="between" gap={2} align="baseline">
                 <Text variant="footnote" color="secondary">
-                  Health
+                  {t('hostek.health')}
                 </Text>
                 <Badge variant={d.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{d.health}</Badge>
               </Stack>
@@ -116,7 +118,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
             {d.tempC ? (
               <Stack direction="row" justify="between" gap={2} align="baseline">
                 <Text variant="footnote" color="secondary">
-                  Temperature
+                  {t('hostek.temperature')}
                 </Text>
                 <Text variant="footnote" className="tabular-nums">
                   {Math.round(d.tempC)} °C
@@ -126,7 +128,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
             {d.firmware && (
               <Stack direction="row" justify="between" gap={2} align="baseline">
                 <Text variant="footnote" color="secondary">
-                  Firmware
+                  {t('hostek.firmware')}
                 </Text>
                 <Text variant="footnote" className="tabular-nums">
                   {d.firmware}
@@ -136,7 +138,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
             {d.powerOnHours ? (
               <Stack direction="row" justify="between" gap={2} align="baseline">
                 <Text variant="footnote" color="secondary">
-                  Power-on hours
+                  {t('hostek.powerOnHours')}
                 </Text>
                 <Text variant="footnote" className="tabular-nums">
                   {d.powerOnHours.toLocaleString()}
@@ -172,6 +174,7 @@ function DiskCard({ d }: { d: DiskDevice }) {
 }
 
 export function Disks({ api }: ServiceContextProps) {
+  const t = useT();
   const { data } = useLiveQuery<DisksResponse>(() => api.get<DisksResponse>('disks'), 5000);
 
   if (!data) {
@@ -186,13 +189,13 @@ export function Disks({ api }: ServiceContextProps) {
   const disks = [...(data.disks ?? [])].sort((a, b) => Number(b.isSystem) - Number(a.isSystem) || a.name.localeCompare(b.name));
 
   if (disks.length === 0) {
-    return <EmptyState icon={<DiskIcon />} title="No disks" description="No block devices were reported." />;
+    return <EmptyState icon={<DiskIcon />} title={t('hostek.noDisks')} description={t('hostek.noDisksDesc')} />;
   }
 
   return (
     <Stack gap={3}>
       <Text variant="subhead" weight="semibold">
-        {disks.length} disk{disks.length > 1 ? 's' : ''}
+        {t('hostek.diskCount', { count: disks.length })}
       </Text>
       <Grid minItemWidth={360} gap={3}>
         {disks.map((d) => (

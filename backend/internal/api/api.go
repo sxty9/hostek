@@ -23,7 +23,7 @@ const base = "/api/services/hostek/"
 // permissions.d/hostek.json, written by `hostek setup`). Each is backed by the
 // matching Linux group; admins implicitly hold all of them.
 const (
-	permPower     = "hp_hostek_power"     // change OS power + headless config (dangerous)
+	permPower     = "hp_hostek_power"     // change OS power/headless + SSH-session config (dangerous)
 	permProc      = "hp_hostek_proc"      // see the per-process breakdown
 	permIdentity  = "hp_hostek_hwdetail"  // sensitive identity fields (serial, MAC)
 	permTechInfo  = "hp_hostek_techinfo"  // technical fields (power-on hours, firmware, driver)
@@ -200,18 +200,35 @@ func (s *Server) getPower(w http.ResponseWriter, _ *http.Request, _ *auth.User) 
 	writeJSON(w, http.StatusOK, sysconfig.Read())
 }
 
+// setPower applies the server-autonomy toggles. Each field is optional (pointer):
+// the UI sends only the one switch it flipped, so we apply just what's present and
+// leave the other setting untouched.
 func (s *Server) setPower(w http.ResponseWriter, r *http.Request, _ *auth.User) {
 	var body struct {
-		Headless bool `json:"headless"`
+		Headless    *bool `json:"headless"`
+		TmuxPersist *bool `json:"tmuxPersist"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if err := sysconfig.Apply(body.Headless); err != nil {
-		log.Printf("hostek: apply power config (headless=%v) failed: %v", body.Headless, err)
-		writeErr(w, http.StatusInternalServerError, "Failed to apply power configuration")
+	if body.Headless == nil && body.TmuxPersist == nil {
+		writeErr(w, http.StatusBadRequest, "No setting to change")
 		return
+	}
+	if body.Headless != nil {
+		if err := sysconfig.Apply(*body.Headless); err != nil {
+			log.Printf("hostek: apply power config (headless=%v) failed: %v", *body.Headless, err)
+			writeErr(w, http.StatusInternalServerError, "Failed to apply power configuration")
+			return
+		}
+	}
+	if body.TmuxPersist != nil {
+		if err := sysconfig.ApplyTmux(*body.TmuxPersist); err != nil {
+			log.Printf("hostek: apply tmux SSH persistence (persist=%v) failed: %v", *body.TmuxPersist, err)
+			writeErr(w, http.StatusInternalServerError, "Failed to apply SSH session configuration")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, sysconfig.Read())
 }
