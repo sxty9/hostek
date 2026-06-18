@@ -45,6 +45,22 @@ export function Config({ api, ui }: ServiceContextProps) {
     }
   }
 
+  async function setTmuxResume(next: boolean) {
+    const ok = await ui.confirm({
+      title: next ? t('hostek.enableTmuxResumeTitle') : t('hostek.disableTmuxResumeTitle'),
+      description: next ? t('hostek.enableTmuxResumeDesc') : t('hostek.disableTmuxResumeDesc'),
+      confirmLabel: next ? t('hostek.enable') : t('hostek.disable'),
+    });
+    if (!ok) return;
+    try {
+      await api.post('config/power', { tmuxResume: next });
+      ui.toast({ title: next ? t('hostek.tmuxResumeEnabled') : t('hostek.tmuxResumeDisabled'), variant: 'success' });
+      refresh();
+    } catch (e) {
+      ui.toast({ title: t('hostek.applyFailed'), description: (e as Error).message, variant: 'error' });
+    }
+  }
+
   return (
     <Stack gap={4}>
       <Panel title={t('hostek.alwaysOnHeadless')} className="p-4">
@@ -86,9 +102,21 @@ export function Config({ api, ui }: ServiceContextProps) {
             </Stack>
             <Switch checked={data.tmuxPersist} disabled={!data.supported} onChange={setTmuxPersist} />
           </Stack>
+          <Stack direction="row" align="center" justify="between" gap={3}>
+            <Stack gap={1}>
+              <Text weight="semibold">{t('hostek.tmuxResumeLabel')}</Text>
+              <Text variant="footnote" color="secondary">
+                {t('hostek.tmuxResumeDesc')}
+              </Text>
+            </Stack>
+            <Switch checked={data.tmuxResume} disabled={!data.supported || !data.tmuxPersist} onChange={setTmuxResume} />
+          </Stack>
           <Stack direction="row" gap={2}>
             <Badge variant={data.tmuxPersist ? 'success' : 'neutral'}>
               {t('hostek.tmuxSessionLabel')}: {data.tmuxPersist ? t('hostek.tmuxPersistent') : t('hostek.tmuxEphemeral')}
+            </Badge>
+            <Badge variant={data.tmuxResume ? 'success' : 'neutral'}>
+              {t('hostek.tmuxResumeBadgeLabel')}: {data.tmuxResume ? t('hostek.tmuxResumeOn') : t('hostek.tmuxResumeOff')}
             </Badge>
           </Stack>
         </Stack>

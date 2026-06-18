@@ -207,12 +207,13 @@ func (s *Server) setPower(w http.ResponseWriter, r *http.Request, _ *auth.User) 
 	var body struct {
 		Headless    *bool `json:"headless"`
 		TmuxPersist *bool `json:"tmuxPersist"`
+		TmuxResume  *bool `json:"tmuxResume"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if body.Headless == nil && body.TmuxPersist == nil {
+	if body.Headless == nil && body.TmuxPersist == nil && body.TmuxResume == nil {
 		writeErr(w, http.StatusBadRequest, "No setting to change")
 		return
 	}
@@ -226,6 +227,13 @@ func (s *Server) setPower(w http.ResponseWriter, r *http.Request, _ *auth.User) 
 	if body.TmuxPersist != nil {
 		if err := sysconfig.ApplyTmux(*body.TmuxPersist); err != nil {
 			log.Printf("hostek: apply tmux SSH persistence (persist=%v) failed: %v", *body.TmuxPersist, err)
+			writeErr(w, http.StatusInternalServerError, "Failed to apply SSH session configuration")
+			return
+		}
+	}
+	if body.TmuxResume != nil {
+		if err := sysconfig.ApplyTmuxResume(*body.TmuxResume); err != nil {
+			log.Printf("hostek: apply tmux orphan-session resume (resume=%v) failed: %v", *body.TmuxResume, err)
 			writeErr(w, http.StatusInternalServerError, "Failed to apply SSH session configuration")
 			return
 		}

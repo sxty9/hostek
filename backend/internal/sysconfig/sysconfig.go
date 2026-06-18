@@ -21,6 +21,8 @@ const (
 	tmuxWrapper = "/usr/local/sbin/hostek-tmux-set"
 	// profile.d snippet the tmux wrapper installs; its presence is the on/off state.
 	tmuxProfile = "/etc/profile.d/hostek-tmux.sh"
+	// marker the tmux wrapper drops for the resume sub-option; its presence is the on/off state.
+	tmuxResume = "/etc/hostek/tmux-resume"
 )
 
 // BiosNote is the informational firmware setting (already configured in UEFI).
@@ -39,6 +41,7 @@ type PowerState struct {
 	LidIgnore       bool     `json:"lidIgnore"`
 	SuspendMasked   bool     `json:"suspendMasked"`
 	TmuxPersist     bool     `json:"tmuxPersist"`
+	TmuxResume      bool     `json:"tmuxResume"`
 	BiosAutoPowerOn BiosNote `json:"biosAutoPowerOn"`
 }
 
@@ -61,6 +64,7 @@ func Read() PowerState {
 	st.LidIgnore = lidIgnore()
 	st.Headless = st.SuspendMasked && st.LidIgnore
 	st.TmuxPersist = tmuxPersist()
+	st.TmuxResume = tmuxResumeOn()
 	return st
 }
 
@@ -68,6 +72,14 @@ func Read() PowerState {
 // tmux session. The profile.d snippet installed by the wrapper is the source of truth.
 func tmuxPersist() bool {
 	_, err := os.Stat(tmuxProfile)
+	return err == nil
+}
+
+// tmuxResumeOn reports whether the resume sub-option is enabled — a new login reattaches
+// to an orphaned (detached) session instead of always opening a fresh one. The marker the
+// wrapper drops is the source of truth; it only matters while tmuxPersist is on.
+func tmuxResumeOn() bool {
+	_, err := os.Stat(tmuxResume)
 	return err == nil
 }
 
@@ -103,14 +115,30 @@ func ApplyTmux(persist bool) error {
 	return runWrapper(tmuxWrapper, persist)
 }
 
-// runWrapper invokes a privileged on|off wrapper via `sudo -n`, surfacing its stderr.
-func runWrapper(path string, on bool) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("system configuration is only supported on Linux")
+// ApplyTmuxResume turns the resume sub-option on or off via the privileged wrapper
+// (drops/removes the /etc/hostek/tmux-resume marker the login snippet checks).
+func ApplyTmuxResume(resume bool) error {
+	arg := "resume-off"
+	if resume {
+		arg = "resume-on"
 	}
+	return runWrapperArg(tmuxWrapper, arg)
+}
+
+// runWrapper invokes a privileged on|off wrapper via `sudo -n`.
+func runWrapper(path string, on bool) error {
 	arg := "off"
 	if on {
 		arg = "on"
+	}
+	return runWrapperArg(path, arg)
+}
+
+// runWrapperArg invokes a privileged wrapper with the given subcommand via `sudo -n`,
+// surfacing its stderr.
+func runWrapperArg(path, arg string) error {
+	if runtime.GOOS != "linux" {
+		return errors.New("system configuration is only supported on Linux")
 	}
 	cmd := exec.Command("sudo", "-n", path, arg)
 	var stderr strings.Builder
