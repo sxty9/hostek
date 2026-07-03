@@ -32,11 +32,9 @@ type DiskDevice struct {
 	Type       string `json:"type,omitempty"` // "NVMe"/"SSD"/"HDD"
 	IsSystem   bool   `json:"isSystem"`
 	// SMART (best-effort, from the ~30s cache) — symmetric with the System-tab disk card.
-	Health       string          `json:"health,omitempty"`
-	TempC        float64         `json:"tempC,omitempty"`
-	Firmware     string          `json:"firmware,omitempty"`
-	PowerOnHours int             `json:"powerOnHours,omitempty"`
-	Partitions   []DiskPartition `json:"partitions,omitempty"`
+	// Embedded so health/tempC/firmware/powerOnHours/lifePercent/… serialize inline.
+	SmartHealth
+	Partitions []DiskPartition `json:"partitions,omitempty"`
 }
 
 // lsblkNode mirrors the subset of `lsblk -J` fields we consume; children are the
@@ -140,7 +138,7 @@ func (c *Collector) Disks() []DiskDevice {
 			IsSystem:   root != "" && n.Name == root,
 		}
 		if sd, ok := smart[n.Name]; ok {
-			d.Health, d.TempC, d.Firmware, d.PowerOnHours = sd.Health, sd.TempC, sd.Firmware, sd.PowerOnHours
+			d.SmartHealth = sd
 		}
 		for _, ch := range n.Children {
 			d.Partitions = append(d.Partitions, partition(ch))

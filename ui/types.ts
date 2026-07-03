@@ -201,16 +201,46 @@ export interface GPUInfo {
   powerLimitW?: number;
 }
 
-export interface DiskHWInfo {
+// Raw SMART/NVMe diagnostic counters — the technical drill-down, gated behind the
+// techinfo right (the whole object is absent for users without it). A value of 0 is
+// meaningful (present-and-good); undefined means the attribute is absent on this drive.
+export interface SmartRaw {
+  reallocatedSectors?: number;
+  pendingSectors?: number;
+  offlineUncorrectable?: number;
+  reportedUncorrect?: number;
+  commandTimeout?: number;
+  spinRetry?: number;
+  udmaCrc?: number;
+  percentageUsed?: number;
+  availableSpare?: number;
+  availableSpareThreshold?: number;
+  criticalWarning?: number;
+  mediaErrors?: number;
+  unsafeShutdowns?: number;
+  tbwBytes?: number;
+}
+
+// SmartHealth is the shared SMART-derived surface embedded into both disk shapes.
+export interface SmartHealth {
+  health?: string; // SMART overall self-assessment ("PASSED"/"FAILED")
+  tempC?: number;
+  firmware?: string;
+  powerOnHours?: number;
+  powerCycles?: number;
+  healthStatus?: 'healthy' | 'warning' | 'critical'; // derived verdict
+  healthReason?: string; // short trigger when not healthy
+  lifePercent?: number; // remaining endurance %, SSD/NVMe only
+  agePercent?: number; // power-on age %, HDD only
+  smart?: SmartRaw; // techinfo-gated raw counters
+}
+
+export interface DiskHWInfo extends SmartHealth {
   device?: string;
   model?: string;
   serial?: string;
-  firmware?: string;
   sizeBytes?: number;
   type?: string;
-  health?: string;
-  tempC?: number;
-  powerOnHours?: number;
 }
 
 export interface NICInfo {
@@ -243,7 +273,7 @@ export interface DiskPartition {
   percent?: number;
 }
 
-export interface DiskDevice {
+export interface DiskDevice extends SmartHealth {
   name: string;
   model?: string;
   serial?: string;
@@ -253,10 +283,6 @@ export interface DiskDevice {
   rotational: boolean;
   type?: string;
   isSystem: boolean;
-  health?: string;
-  tempC?: number;
-  firmware?: string;
-  powerOnHours?: number;
   partitions?: DiskPartition[];
 }
 export interface DisksResponse {

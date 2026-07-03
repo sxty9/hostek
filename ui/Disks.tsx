@@ -7,6 +7,7 @@ import {
   Grid,
   Marquee,
   Panel,
+  ProgressBar,
   Spinner,
   SsdIcon,
   Stack,
@@ -16,9 +17,36 @@ import {
   useT,
   type ServiceContextProps,
 } from '@holistic/ui';
+import type { ReactNode } from 'react';
 import type { DiskDevice, DisksResponse } from './types';
 
 const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ');
+
+// Health verdict → Badge variant. Anything but critical/warning reads as healthy.
+const statusVariant = (s: DiskDevice['healthStatus']): 'success' | 'warning' | 'danger' =>
+  s === 'critical' ? 'danger' : s === 'warning' ? 'warning' : 'success';
+
+// Remaining-life % → bar tone (green→amber→red as endurance runs out).
+const lifeTone = (p: number): 'ssd' | 'warning' | 'danger' => (p <= 10 ? 'danger' : p <= 25 ? 'warning' : 'ssd');
+
+// One label/value row in the SMART block; a string value is rendered as tabular text,
+// anything else (e.g. a Badge) is rendered as-is.
+function InfoRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Stack direction="row" justify="between" gap={2} align="baseline">
+      <Text variant="footnote" color="secondary">
+        {label}
+      </Text>
+      {typeof children === 'string' ? (
+        <Text variant="footnote" className="tabular-nums">
+          {children}
+        </Text>
+      ) : (
+        children
+      )}
+    </Stack>
+  );
+}
 
 function DiskCard({ d }: { d: DiskDevice }) {
   const t = useT();
@@ -33,6 +61,36 @@ function DiskCard({ d }: { d: DiskDevice }) {
   const hasUsage = mounts.length > 0 && fsUsed > 0;
   const Icon = d.rotational ? DiskIcon : SsdIcon;
   const subtitle = join(`/dev/${d.name}`, d.port || (d.transport && d.transport.toUpperCase()) || '', d.serial || '');
+
+  const statusLabel: Record<'healthy' | 'warning' | 'critical', string> = {
+    healthy: t('hostek.statusHealthy'),
+    warning: t('hostek.statusWarning'),
+    critical: t('hostek.statusCritical'),
+  };
+
+  // Raw SMART/NVMe counters — only present when the viewer holds the techinfo right
+  // (the backend nils the whole object otherwise). 0 is a real, reassuring value.
+  const raw = d.smart;
+  const smartRows: { label: string; value: string }[] = [];
+  if (raw) {
+    const numOf = (v?: number) => (typeof v === 'number' ? v.toLocaleString() : undefined);
+    const add = (label: string, value: string | undefined) => {
+      if (value !== undefined) smartRows.push({ label, value });
+    };
+    add(t('hostek.reallocated'), numOf(raw.reallocatedSectors));
+    add(t('hostek.pendingSectors'), numOf(raw.pendingSectors));
+    add(t('hostek.uncorrectable'), numOf(raw.offlineUncorrectable ?? raw.reportedUncorrect));
+    if (typeof raw.availableSpare === 'number') {
+      const thr = typeof raw.availableSpareThreshold === 'number' ? ` (≥ ${raw.availableSpareThreshold} %)` : '';
+      add(t('hostek.availableSpare'), `${raw.availableSpare} %${thr}`);
+    }
+    add(t('hostek.mediaErrors'), numOf(raw.mediaErrors));
+    add(t('hostek.crcErrors'), numOf(raw.udmaCrc));
+    if (typeof raw.tbwBytes === 'number' && raw.tbwBytes > 0) add(t('hostek.tbw'), formatBytes(raw.tbwBytes));
+  }
+
+  const hasSmart =
+    d.healthStatus || d.health || d.tempC || d.firmware || d.powerOnHours || d.powerCycles || typeof d.lifePercent === 'number' || typeof d.agePercent === 'number';
 
   return (
     <Panel className="p-4">
@@ -104,47 +162,67 @@ function DiskCard({ d }: { d: DiskDevice }) {
           </Stack>
         </Stack>
 
-        {/* SMART (symmetric with the System-tab disk card) */}
-        {(d.health || d.tempC || d.firmware || d.powerOnHours) && (
-          <Stack gap={1} className="border-t border-separator pt-2">
-            {d.health && (
-              <Stack direction="row" justify="between" gap={2} align="baseline">
-                <Text variant="footnote" color="secondary">
-                  {t('hostek.health')}
-                </Text>
-                <Badge variant={d.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{d.health}</Badge>
+        {/* SMART / health (symmetric with the System-tab disk card) */}
+        {hasSmart && (
+          <Stack gap={2} className="border-t border-separator pt-2">
+            {/* Derived verdict + optional reason */}
+            {(d.healthStatus || d.health) && (
+              <Stack gap={0.5}>
+                <InfoRow label={t('hostek.health')}>
+                  {d.healthStatus ? (
+                    <Badge variant={statusVariant(d.healthStatus)}>{statusLabel[d.healthStatus]}</Badge>
+                  ) : (
+                    <Badge variant={d.health!.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{d.health}</Badge>
+                  )}
+                </InfoRow>
+                {d.healthReason && d.healthStatus && d.healthStatus !== 'healthy' && (
+                  <Text variant="caption" color="tertiary" className="text-right">
+                    {d.healthReason}
+                  </Text>
+                )}
               </Stack>
             )}
-            {d.tempC ? (
-              <Stack direction="row" justify="between" gap={2} align="baseline">
-                <Text variant="footnote" color="secondary">
-                  {t('hostek.temperature')}
-                </Text>
-                <Text variant="footnote" className="tabular-nums">
-                  {Math.round(d.tempC)} °C
-                </Text>
+
+            {/* Lebensdauer % (SSD/NVMe) or Betriebszeit-Alter (HDD) */}
+            {typeof d.lifePercent === 'number' ? (
+              <Stack gap={1}>
+                <InfoRow label={t('hostek.lifespan')}>
+                  <Text variant="footnote" weight="medium" className="tabular-nums">
+                    {d.lifePercent} %
+                  </Text>
+                </InfoRow>
+                <ProgressBar value={d.lifePercent} tone={lifeTone(d.lifePercent)} />
+              </Stack>
+            ) : typeof d.agePercent === 'number' ? (
+              <Stack gap={1}>
+                <InfoRow label={t('hostek.uptimeAge')}>
+                  <Text variant="footnote" weight="medium" className="tabular-nums">
+                    {d.agePercent} %
+                  </Text>
+                </InfoRow>
+                <ProgressBar value={d.agePercent} tone="accent" />
               </Stack>
             ) : null}
-            {d.firmware && (
-              <Stack direction="row" justify="between" gap={2} align="baseline">
-                <Text variant="footnote" color="secondary">
-                  {t('hostek.firmware')}
+
+            {/* Vitals */}
+            {d.tempC ? <InfoRow label={t('hostek.temperature')}>{`${Math.round(d.tempC)} °C`}</InfoRow> : null}
+            {d.powerOnHours ? <InfoRow label={t('hostek.powerOnHours')}>{d.powerOnHours.toLocaleString()}</InfoRow> : null}
+            {d.powerCycles ? <InfoRow label={t('hostek.powerCycles')}>{d.powerCycles.toLocaleString()}</InfoRow> : null}
+            {d.firmware ? <InfoRow label={t('hostek.firmware')}>{d.firmware}</InfoRow> : null}
+
+            {/* Raw SMART drill-down — present only for viewers with the techinfo right */}
+            {smartRows.length > 0 && (
+              <Stack gap={1} className="border-t border-separator/60 pt-2">
+                <Text variant="caption" color="tertiary">
+                  {t('hostek.smartDetails')}
                 </Text>
-                <Text variant="footnote" className="tabular-nums">
-                  {d.firmware}
-                </Text>
+                {smartRows.map((r) => (
+                  <InfoRow key={r.label} label={r.label}>
+                    {r.value}
+                  </InfoRow>
+                ))}
               </Stack>
             )}
-            {d.powerOnHours ? (
-              <Stack direction="row" justify="between" gap={2} align="baseline">
-                <Text variant="footnote" color="secondary">
-                  {t('hostek.powerOnHours')}
-                </Text>
-                <Text variant="footnote" className="tabular-nums">
-                  {d.powerOnHours.toLocaleString()}
-                </Text>
-              </Stack>
-            ) : null}
           </Stack>
         )}
 

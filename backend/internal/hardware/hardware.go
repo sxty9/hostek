@@ -99,17 +99,16 @@ type GPUInfo struct {
 	PowerLimitW    float64 `json:"powerLimitW,omitempty"`
 }
 
-// DiskHWInfo is the SYSTEM disk only (for the System tab).
+// DiskHWInfo is the SYSTEM disk only (for the System tab). The SMART/health
+// fields (health, temp, firmware, power-on hours, life %, verdict, raw counters)
+// come from the embedded SmartHealth so they stay in sync with the Disks tab.
 type DiskHWInfo struct {
-	Device       string  `json:"device,omitempty"`
-	Model        string  `json:"model,omitempty"`
-	Serial       string  `json:"serial,omitempty"`
-	Firmware     string  `json:"firmware,omitempty"`
-	SizeBytes    uint64  `json:"sizeBytes,omitempty"`
-	Type         string  `json:"type,omitempty"`   // "NVMe SSD" / "SATA SSD" / "HDD"
-	Health       string  `json:"health,omitempty"` // SMART overall, e.g. "PASSED"
-	TempC        float64 `json:"tempC,omitempty"`
-	PowerOnHours int     `json:"powerOnHours,omitempty"`
+	Device      string `json:"device,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Serial      string `json:"serial,omitempty"`
+	SizeBytes   uint64 `json:"sizeBytes,omitempty"`
+	Type        string `json:"type,omitempty"` // "NVMe SSD" / "SATA SSD" / "HDD"
+	SmartHealth        // health, tempC, firmware, powerOnHours, healthStatus, lifePercent, …
 }
 
 // NICInfo is one physical network interface.
@@ -155,7 +154,7 @@ type Collector struct {
 	mu        sync.RWMutex
 	st        Info                 // static probe
 	dyn       dynamic              // live values, merged into Get()
-	smart     map[string]SmartData // per-disk SMART (keyed by base name), ~30s refresh
+	smart     map[string]SmartHealth // per-disk SMART (keyed by base name), ~30s refresh
 	thermCrit []ThermalMeta        // temperature-measurable components + critical limits
 	thermRing []ThermalSample      // temperature time-series (~6 min)
 }
@@ -194,7 +193,7 @@ func (c *Collector) Start() {
 
 // probeSmart refreshes the SMART cache for every whole disk via the privileged wrapper.
 func (c *Collector) probeSmart() {
-	m := map[string]SmartData{}
+	m := map[string]SmartHealth{}
 	for _, name := range wholeDiskNames() {
 		if out, ok := sudoHwinfo(cmdTimeout, "smart", "/dev/"+name); ok {
 			m[name] = parseSmartData(out)
@@ -692,58 +691,8 @@ func diskTypeString(tran string, rota bool) string {
 	return "SSD"
 }
 
-var (
-	smartFirmwareRe = regexp.MustCompile(`(?mi)^Firmware Version:\s*(.+)$`)
-	smartHealthRe   = regexp.MustCompile(`(?mi)self-assessment test result:\s*(\S+)`)
-	smartHealthNVMe = regexp.MustCompile(`(?mi)^SMART Health Status:\s*(\S+)`)
-	// ATA attribute table row: id name flags ... raw_value (POH is the last col).
-	smartPOHAttr = regexp.MustCompile(`(?mi)^\s*\d+\s+Power_On_Hours\b.*\s(\d+)\s*$`)
-	// NVMe "Power On Hours: 1,234".
-	smartPOHNVMe   = regexp.MustCompile(`(?mi)^Power On Hours:\s*([\d,]+)`)
-	smartTempAttr  = regexp.MustCompile(`(?mi)^\s*\d+\s+Temperature_\w+\b.*\s(\d+)\s*(?:\(|$)`)
-	smartTempNVMe  = regexp.MustCompile(`(?mi)^Temperature:\s*(\d+)\s*Celsius`)
-	smartTempCurRe = regexp.MustCompile(`(?mi)^Current Drive Temperature:\s*(\d+)`)
-)
-
-// SmartData is the SMART subset surfaced for any disk (ATA + NVMe output handled).
-type SmartData struct {
-	Health       string
-	TempC        float64
-	Firmware     string
-	PowerOnHours int
-}
-
-func parseSmartData(out string) SmartData {
-	var sd SmartData
-	if m := smartFirmwareRe.FindStringSubmatch(out); m != nil {
-		sd.Firmware = strings.TrimSpace(m[1])
-	}
-	if m := smartHealthRe.FindStringSubmatch(out); m != nil {
-		sd.Health = strings.TrimSpace(m[1])
-	} else if m := smartHealthNVMe.FindStringSubmatch(out); m != nil {
-		sd.Health = strings.TrimSpace(m[1])
-	}
-	switch {
-	case smartPOHAttr.MatchString(out):
-		sd.PowerOnHours = atoi(smartPOHAttr.FindStringSubmatch(out)[1])
-	case smartPOHNVMe.MatchString(out):
-		sd.PowerOnHours = atoi(strings.ReplaceAll(smartPOHNVMe.FindStringSubmatch(out)[1], ",", ""))
-	}
-	switch {
-	case smartTempNVMe.MatchString(out):
-		sd.TempC = atof(smartTempNVMe.FindStringSubmatch(out)[1])
-	case smartTempCurRe.MatchString(out):
-		sd.TempC = atof(smartTempCurRe.FindStringSubmatch(out)[1])
-	case smartTempAttr.MatchString(out):
-		sd.TempC = atof(smartTempAttr.FindStringSubmatch(out)[1])
-	}
-	return sd
-}
-
-func parseSMART(out string, d *DiskHWInfo) {
-	sd := parseSmartData(out)
-	d.Firmware, d.Health, d.TempC, d.PowerOnHours = sd.Firmware, sd.Health, sd.TempC, sd.PowerOnHours
-}
+// SMART parsing lives in smart.go: parseSmartData (JSON) and the parseSMART
+// System-tab adapter, plus the SmartHealth/SmartRaw types embedded below.
 
 // --- NICs --------------------------------------------------------------------
 

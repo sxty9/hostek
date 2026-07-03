@@ -142,6 +142,7 @@ func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) 
 	}
 	if !canTech {
 		info.Disk.Firmware, info.Disk.PowerOnHours = "", 0
+		info.Disk.Raw = nil // raw SMART/NVMe counters are the technician drill-down
 	}
 	if (!canTherm || !canPwr || !canTech) && len(info.GPUs) > 0 {
 		info.GPUs = append([]hardware.GPUInfo(nil), info.GPUs...)
@@ -184,6 +185,7 @@ func (s *Server) disks(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 		}
 		if !canTech {
 			ds[i].Firmware, ds[i].PowerOnHours = "", 0
+			ds[i].Raw = nil // raw SMART/NVMe counters are the technician drill-down
 		}
 		if !canTherm {
 			ds[i].TempC = 0

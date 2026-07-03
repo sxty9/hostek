@@ -31,6 +31,10 @@ function mhz(v?: number): string | undefined {
 const degC = (v?: number) => (v && v > 0 ? `${Math.round(v)} °C` : undefined);
 const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ') || undefined;
 
+// Health verdict → Badge variant (anything but critical/warning reads as healthy).
+const statusVariant = (s?: 'healthy' | 'warning' | 'critical'): 'success' | 'warning' | 'danger' =>
+  s === 'critical' ? 'danger' : s === 'warning' ? 'warning' : 'success';
+
 function Spec({ label, value }: { label: string; value?: ReactNode }) {
   if (value === undefined || value === null || value === '') return null;
   return (
@@ -184,10 +188,21 @@ export function System({ api }: ServiceContextProps) {
         <Spec label={t('hostek.capacity')} value={disk.sizeBytes ? formatBytes(disk.sizeBytes) : undefined} />
         <Spec
           label={t('hostek.health')}
-          value={disk.health ? <Badge variant={disk.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{disk.health}</Badge> : undefined}
+          value={
+            disk.healthStatus ? (
+              <Badge variant={statusVariant(disk.healthStatus)}>
+                {t(disk.healthStatus === 'critical' ? 'hostek.statusCritical' : disk.healthStatus === 'warning' ? 'hostek.statusWarning' : 'hostek.statusHealthy')}
+              </Badge>
+            ) : disk.health ? (
+              <Badge variant={disk.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{disk.health}</Badge>
+            ) : undefined
+          }
         />
+        <Spec label={t('hostek.lifespan')} value={typeof disk.lifePercent === 'number' ? `${disk.lifePercent} %` : undefined} />
+        <Spec label={t('hostek.uptimeAge')} value={typeof disk.agePercent === 'number' ? `${disk.agePercent} %` : undefined} />
         <Spec label={t('hostek.temperature')} value={degC(disk.tempC)} />
         <Spec label={t('hostek.powerOnHours')} value={disk.powerOnHours ? disk.powerOnHours.toLocaleString() : undefined} />
+        <Spec label={t('hostek.powerCycles')} value={disk.powerCycles ? disk.powerCycles.toLocaleString() : undefined} />
         <Spec label={t('hostek.firmware')} value={disk.firmware} />
         <Spec label={t('hostek.serial')} value={disk.serial} />
       </CompCard>

@@ -234,7 +234,14 @@ case "${1:-}" in
   smart)
     dev="${2:-}"
     [[ "$dev" =~ ^/dev/[a-zA-Z0-9]+$ ]] || { echo "hostek-hwinfo: invalid device" >&2; exit 2; }
-    exec smartctl -a "$dev"
+    # JSON (-aj) is parsed by hostekd. smartctl's exit code is a bitmask: bits 0-2
+    # are usage/open/read errors (propagate → daemon treats as "no data"); bits 3-7
+    # are SMART warnings (drive failing/prefail/log errors) where the JSON is still
+    # valid and is exactly the health info we want to surface — so keep it, exit 0.
+    if out=$(smartctl -aj "$dev"); then rc=0; else rc=$?; fi
+    printf '%s\n' "$out"
+    if (( rc & 0x07 )); then exit "$rc"; fi
+    exit 0
     ;;
   *) echo "usage: hostek-hwinfo {dmidecode-processor|dmidecode-memory|dmidecode-baseboard|dmidecode-bios|decode-dimms|smart <dev>}" >&2; exit 2 ;;
 esac
