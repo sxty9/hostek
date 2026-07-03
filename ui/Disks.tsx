@@ -26,7 +26,19 @@ import type { DiskDevice, DisksResponse } from './types';
 // (apiFor('aigentic') → POST run). We reuse its per-user Anthropic key + billing rather
 // than giving hostek its own credential; hostek and aigentic share the holistic session.
 interface AigenticRunResponse {
-  data: { output: string };
+  data: { output: string; engine?: string; model?: string };
+}
+
+// aigentic's chat-handoff contract, mirrored here because hostek can't import across plugins
+// (kept in sync with aigentic/ui/types.ts). Writing this seed to localStorage and switching to
+// aigentic seeds a new chat with the prompt + answer, so the rating continues as a conversation.
+const AIGENTIC_CHAT_SEED_KEY = 'aigentic.chat.seed';
+interface AigenticChatSeed {
+  prompt: string;
+  answer: string;
+  engine?: string;
+  model?: string;
+  folder?: string;
 }
 
 // Compact, health-focused view of a disk for the AI prompt (drops noise like WWN/serial).
@@ -284,11 +296,11 @@ function DiskCard({ d }: { d: DiskDevice }) {
   );
 }
 
-export function Disks({ api, apiFor, user, ui }: ServiceContextProps) {
+export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
   const t = useT();
   const { data } = useLiveQuery<DisksResponse>(() => api.get<DisksResponse>('disks'), 5000);
   const [aiBusy, setAiBusy] = useState(false);
-  const [aiResult, setAiResult] = useState<string | null>(null);
+  const [aiResult, setAiResult] = useState<{ prompt: string; output: string; engine?: string; model?: string } | null>(null);
 
   if (!data) {
     return (
@@ -334,12 +346,31 @@ export function Disks({ api, apiFor, user, ui }: ServiceContextProps) {
         header: { kind: 'claude-api' },
         data: { prompt, outputFormat: 'markdown', maxTokens: 1200 },
       });
-      setAiResult(res.data.output);
+      setAiResult({ prompt, output: res.data.output, engine: res.data.engine, model: res.data.model });
     } catch (e) {
       ui.toast({ title: t('hostek.rateFailed'), description: (e as Error).message, variant: 'error' });
     } finally {
       setAiBusy(false);
     }
+  }
+
+  // Hand the rating off to the aigentic chat tab, where it continues as a conversation —
+  // same seed contract the Files "Ask AI" panel uses.
+  function continueInChat() {
+    if (!aiResult) return;
+    const seed: AigenticChatSeed = {
+      prompt: aiResult.prompt,
+      answer: aiResult.output,
+      engine: aiResult.engine,
+      model: aiResult.model,
+      folder: 'hostek/disks',
+    };
+    try {
+      localStorage.setItem(AIGENTIC_CHAT_SEED_KEY, JSON.stringify(seed));
+    } catch {
+      // localStorage unavailable (private mode / quota) — fall back to opening an empty chat.
+    }
+    nav.openService('aigentic');
   }
 
   return (
@@ -359,10 +390,15 @@ export function Disks({ api, apiFor, user, ui }: ServiceContextProps) {
       {aiResult && (
         <Panel className="p-4">
           <Stack gap={2}>
-            <Text variant="subhead" weight="semibold">
-              {t('hostek.aiAnalysis')}
-            </Text>
-            <Markdown text={aiResult} />
+            <Stack direction="row" justify="between" align="center" gap={3}>
+              <Text variant="subhead" weight="semibold">
+                {t('hostek.aiAnalysis')}
+              </Text>
+              <Button variant="secondary" size="sm" onClick={continueInChat}>
+                {t('hostek.continueInChat')}
+              </Button>
+            </Stack>
+            <Markdown text={aiResult.output} />
           </Stack>
         </Panel>
       )}
