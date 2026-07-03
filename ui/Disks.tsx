@@ -1,10 +1,12 @@
 import {
   Badge,
   Box,
+  Button,
   DiskIcon,
   Donut,
   EmptyState,
   Grid,
+  Markdown,
   Marquee,
   Panel,
   ProgressBar,
@@ -17,8 +19,39 @@ import {
   useT,
   type ServiceContextProps,
 } from '@holistic/ui';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { DiskDevice, DisksResponse } from './types';
+
+// The "Rate with AI" button routes disk health through the shared `aigentic` service
+// (apiFor('aigentic') → POST run). We reuse its per-user Anthropic key + billing rather
+// than giving hostek its own credential; hostek and aigentic share the holistic session.
+interface AigenticRunResponse {
+  data: { output: string };
+}
+
+// Compact, health-focused view of a disk for the AI prompt (drops noise like WWN/serial).
+function ratePayload(disks: DiskDevice[]) {
+  return disks.map((d) => ({
+    device: `/dev/${d.name}`,
+    model: d.model,
+    kind: d.type,
+    rotational: d.rotational,
+    capacityBytes: d.sizeBytes,
+    smartHealth: d.health,
+    status: d.healthStatus,
+    reason: d.healthReason,
+    lifeRemainingPct: d.lifePercent,
+    agePct: d.agePercent,
+    tempC: d.tempC,
+    powerOnHours: d.powerOnHours,
+    powerCycles: d.powerCycles,
+    firmware: d.firmware,
+    smart: d.smart,
+    partitions: (d.partitions ?? [])
+      .filter((p) => p.mount)
+      .map((p) => ({ mount: p.mount, fstype: p.fstype, usedBytes: p.used, totalBytes: p.total, percent: p.percent })),
+  }));
+}
 
 const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ');
 
@@ -251,9 +284,11 @@ function DiskCard({ d }: { d: DiskDevice }) {
   );
 }
 
-export function Disks({ api }: ServiceContextProps) {
+export function Disks({ api, apiFor, user, ui }: ServiceContextProps) {
   const t = useT();
   const { data } = useLiveQuery<DisksResponse>(() => api.get<DisksResponse>('disks'), 5000);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiResult, setAiResult] = useState<string | null>(null);
 
   if (!data) {
     return (
@@ -270,11 +305,91 @@ export function Disks({ api }: ServiceContextProps) {
     return <EmptyState icon={<DiskIcon />} title={t('hostek.noDisks')} description={t('hostek.noDisksDesc')} />;
   }
 
+  // Aggregate used / total across every physical drive. Capacity is the raw device
+  // size; "used" is filesystem-level (mounted partitions), matching each card's figures.
+  const totalCapacity = disks.reduce((s, d) => s + (d.sizeBytes || 0), 0);
+  const totalUsed = disks.reduce(
+    (s, d) => s + (d.partitions ?? []).filter((p) => p.mount).reduce((a, p) => a + (p.used ?? 0), 0),
+    0,
+  );
+  const overallPct = totalCapacity > 0 ? Math.min(100, (totalUsed / totalCapacity) * 100) : 0;
+
+  // "Rate with AI" routes through aigentic's metered Anthropic API (admins always qualify).
+  const canRate = user.isAdmin || user.groups.includes('hp_aigentic_api');
+
+  async function rateWithAI() {
+    setAiBusy(true);
+    try {
+      const lang = typeof navigator !== 'undefined' ? navigator.language : 'en';
+      const prompt = [
+        'You are a storage-reliability expert. Assess the health of the disks below and give the user concrete, actionable recommendations.',
+        `Respond in ${lang} using concise Markdown: start with a one-line overall verdict, then one short bullet per disk (its state plus what to do — watch, back up, plan replacement, improve cooling). Explain SMART warnings in plain terms. Be specific but do not over-alarm: reallocated sectors with zero pending/uncorrectable sectors are a watch item, not an emergency. Spinning HDDs have no wear %, only an age/uptime proxy.`,
+        '',
+        'Disks (JSON):',
+        '```json',
+        JSON.stringify(ratePayload(disks), null, 2),
+        '```',
+      ].join('\n');
+      const res = await apiFor('aigentic').post<AigenticRunResponse>('run', {
+        header: { kind: 'claude-api' },
+        data: { prompt, outputFormat: 'markdown', maxTokens: 1200 },
+      });
+      setAiResult(res.data.output);
+    } catch (e) {
+      ui.toast({ title: t('hostek.rateFailed'), description: (e as Error).message, variant: 'error' });
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
   return (
     <Stack gap={3}>
-      <Text variant="subhead" weight="semibold">
-        {t('hostek.diskCount', { count: disks.length })}
-      </Text>
+      <Stack direction="row" justify="between" align="center" gap={3}>
+        <Text variant="subhead" weight="semibold">
+          {t('hostek.diskCount', { count: disks.length })}
+        </Text>
+        {canRate && (
+          <Button variant="primary" size="sm" loading={aiBusy} onClick={rateWithAI}>
+            {t('hostek.rateWithAI')}
+          </Button>
+        )}
+      </Stack>
+
+      {/* AI health assessment (on demand) */}
+      {aiResult && (
+        <Panel className="p-4">
+          <Stack gap={2}>
+            <Text variant="subhead" weight="semibold">
+              {t('hostek.aiAnalysis')}
+            </Text>
+            <Markdown text={aiResult} />
+          </Stack>
+        </Panel>
+      )}
+
+      {/* Aggregate storage across all drives */}
+      <Panel className="p-4">
+        <Stack gap={2}>
+          <Stack direction="row" justify="between" gap={2} align="baseline">
+            <Text variant="footnote" color="secondary">
+              {t('hostek.totalStorage')}
+            </Text>
+            <Text variant="footnote" weight="medium" className="tabular-nums">
+              {formatBytes(totalUsed)} / {formatBytes(totalCapacity)} · {overallPct.toFixed(0)}%
+            </Text>
+          </Stack>
+          <ProgressBar value={overallPct} tone="ssd" />
+          <Stack direction="row" justify="between" gap={2}>
+            <Text variant="caption" color="tertiary">
+              {t('hostek.used')} {formatBytes(totalUsed)}
+            </Text>
+            <Text variant="caption" color="tertiary">
+              {t('hostek.free')} {formatBytes(Math.max(0, totalCapacity - totalUsed))}
+            </Text>
+          </Stack>
+        </Stack>
+      </Panel>
+
       <Grid minItemWidth={360} gap={3}>
         {disks.map((d) => (
           <DiskCard key={d.name} d={d} />
