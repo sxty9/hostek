@@ -105,7 +105,10 @@ function DiskCard({ d }: { d: DiskDevice }) {
   const usedPct = total > 0 ? Math.min(100, (fsUsed / total) * 100) : 0;
   const hasUsage = mounts.length > 0 && fsUsed > 0;
   const Icon = d.rotational ? DiskIcon : SsdIcon;
-  const subtitle = join(`/dev/${d.name}`, d.port || (d.transport && d.transport.toUpperCase()) || '', d.serial || '');
+  // Connection (SATA port / NVMe / USB) gets its own labeled row below, so keep
+  // the subtitle to the device node + serial.
+  const subtitle = join(`/dev/${d.name}`, d.serial || '');
+  const connection = d.port || (d.transport && d.transport.toUpperCase()) || '';
 
   const statusLabel: Record<'healthy' | 'warning' | 'critical', string> = {
     healthy: t('hostek.statusHealthy'),
@@ -206,6 +209,13 @@ function DiskCard({ d }: { d: DiskDevice }) {
             </Stack>
           </Stack>
         </Stack>
+
+        {/* Connection — which mainboard SATA port (or NVMe/USB) the disk hangs off */}
+        {connection && (
+          <Stack className="border-t border-separator pt-2">
+            <InfoRow label={t('hostek.connection')}>{connection}</InfoRow>
+          </Stack>
+        )}
 
         {/* SMART / health (symmetric with the System-tab disk card) */}
         {hasSmart && (

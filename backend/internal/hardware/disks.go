@@ -2,6 +2,8 @@ package hardware
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 
 	"github.com/shirou/gopsutil/v4/disk"
@@ -200,6 +202,8 @@ func diskListType(tran string, rota bool) string {
 }
 
 // portLabel is a friendly connection hint derived from transport + device name.
+// For SATA/ATA disks it resolves the physical mainboard port ("SATA Port 3")
+// from sysfs; otherwise it falls back to the transport family.
 func portLabel(tran, name string) string {
 	switch strings.ToLower(tran) {
 	case "nvme":
@@ -207,7 +211,35 @@ func portLabel(tran, name string) string {
 	case "usb":
 		return "USB"
 	case "sata", "ata":
+		if p := sataPort(name); p != "" {
+			return "SATA Port " + p
+		}
 		return "SATA"
 	}
 	return ""
+}
+
+// ataPathRe pulls the ataN segment out of a /sys/block/<disk> link target, e.g.
+// ".../ata3/host2/target3:0:0/3:0:0:0/block/sdc" → "ata3".
+var ataPathRe = regexp.MustCompile(`ata(\d+)`)
+
+// sataPort resolves the physical mainboard SATA port for a whole-disk name
+// ("sda") by walking /sys/block/<name> to its libata ataN link and reading the
+// kernel's port_no — the controller-relative hardware port that maps to the
+// board's SATA connector. Falls back to the ataN enumeration index when
+// port_no is absent, and to "" when the topology can't be resolved at all.
+// Best-effort, unprivileged sysfs only.
+func sataPort(name string) string {
+	link, err := os.Readlink("/sys/block/" + name)
+	if err != nil {
+		return ""
+	}
+	m := ataPathRe.FindStringSubmatch(link)
+	if m == nil {
+		return ""
+	}
+	if pn := readSysStr("/sys/class/ata_port/" + m[0] + "/port_no"); pn != "" {
+		return pn
+	}
+	return m[1] // ataN index as a last resort
 }
