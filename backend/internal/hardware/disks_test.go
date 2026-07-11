@@ -24,6 +24,35 @@ func TestPortLabel(t *testing.T) {
 	}
 }
 
+// pcieGenOf maps the GT/s figure in current_link_speed to the PCIe generation,
+// tolerating both "8" and "8.0" spellings and unknown/empty input.
+func TestPcieGenOf(t *testing.T) {
+	cases := map[string]string{
+		"2.5 GT/s PCIe":  "1.0",
+		"5.0 GT/s PCIe":  "2.0",
+		"5 GT/s":         "2.0",
+		"8.0 GT/s PCIe":  "3.0",
+		"16.0 GT/s PCIe": "4.0",
+		"32.0 GT/s PCIe": "5.0",
+		"64.0 GT/s PCIe": "6.0",
+		"":               "",
+		"Unknown":        "",
+	}
+	for in, want := range cases {
+		if got := pcieGenOf(in); got != want {
+			t.Errorf("pcieGenOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// nvmePort degrades to a bare "NVMe" when the device (and thus its PCIe topology)
+// can't be resolved — the label must never come back empty for an NVMe disk.
+func TestNvmePortFallback(t *testing.T) {
+	if got := nvmePort("hostek-no-such-nvme"); got != "NVMe" {
+		t.Errorf("nvmePort(unresolvable) = %q, want %q", got, "NVMe")
+	}
+}
+
 // sataPort returns the real controller port for whichever SATA disks this host
 // actually has (skips cleanly when none/unreadable). It's an integration-style
 // smoke test: we only assert the resolver doesn't return garbage for real disks.

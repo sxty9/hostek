@@ -207,7 +207,7 @@ func diskListType(tran string, rota bool) string {
 func portLabel(tran, name string) string {
 	switch strings.ToLower(tran) {
 	case "nvme":
-		return "NVMe"
+		return nvmePort(name)
 	case "usb":
 		return "USB"
 	case "sata", "ata":
@@ -242,4 +242,84 @@ func sataPort(name string) string {
 		return pn
 	}
 	return m[1] // ataN index as a last resort
+}
+
+// pciFuncRe matches a PCI function address ("0000:02:00.0") inside a sysfs path.
+var pciFuncRe = regexp.MustCompile(`[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]`)
+
+// nvmePort builds the connection detail for an NVMe device: its negotiated PCIe
+// link plus the controller's PCI address, e.g. "NVMe · PCIe 4.0 ×4 · 02:00.0".
+// Any part that can't be read is simply omitted, degrading to a bare "NVMe".
+// Best-effort, unprivileged sysfs only.
+func nvmePort(name string) string {
+	pci := devicePCIAddr(name)
+	if pci == "" {
+		return "NVMe"
+	}
+	parts := []string{"NVMe"}
+	if link := pcieLink(pci); link != "" {
+		parts = append(parts, link)
+	}
+	parts = append(parts, strings.TrimPrefix(pci, "0000:")) // drop the usual domain
+	return strings.Join(parts, " · ")
+}
+
+// devicePCIAddr returns the PCI function a whole disk hangs off — the endpoint
+// closest to the device (the last PCI address in its /sys/block link, i.e. the
+// NVMe controller rather than an upstream bridge). "" when there's no PCI node.
+func devicePCIAddr(name string) string {
+	link, err := os.Readlink("/sys/block/" + name)
+	if err != nil {
+		return ""
+	}
+	m := pciFuncRe.FindAllString(link, -1)
+	if len(m) == 0 {
+		return ""
+	}
+	return m[len(m)-1]
+}
+
+// pcieLink formats a PCI function's negotiated link as "PCIe <gen> ×<width>"
+// (e.g. "PCIe 4.0 ×4") from sysfs current_link_speed/current_link_width. Either
+// half is dropped if unreadable; "" when neither is available.
+func pcieLink(pci string) string {
+	base := "/sys/bus/pci/devices/" + pci
+	gen := pcieGenOf(readSysStr(base + "/current_link_speed")) // "8.0 GT/s PCIe" → "3.0"
+	width := readSysStr(base + "/current_link_width")          // "4"
+	if width == "0" {
+		width = ""
+	}
+	switch {
+	case gen != "" && width != "":
+		return "PCIe " + gen + " ×" + width
+	case gen != "":
+		return "PCIe " + gen
+	case width != "":
+		return "PCIe ×" + width
+	}
+	return ""
+}
+
+// pcieGenOf maps a PCIe per-lane transfer rate (the GT/s number in
+// current_link_speed) to its spec generation. Tolerant of "8" vs "8.0" forms.
+func pcieGenOf(speed string) string {
+	f := strings.Fields(speed)
+	if len(f) == 0 {
+		return ""
+	}
+	switch v := atof(f[0]); {
+	case v >= 63:
+		return "6.0"
+	case v >= 31:
+		return "5.0"
+	case v >= 15:
+		return "4.0"
+	case v >= 7.9:
+		return "3.0"
+	case v >= 4.9:
+		return "2.0"
+	case v >= 2.4:
+		return "1.0"
+	}
+	return ""
 }
