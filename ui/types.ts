@@ -273,6 +273,14 @@ export interface DiskPartition {
   percent?: number;
 }
 
+// The PCI controller a SATA disk hangs off. Port numbers restart at 1 on every
+// controller, so "SATA Port 1" is only unambiguous together with this.
+export interface StorageController {
+  pci?: string; // "06:00.0"
+  name?: string; // "ASMedia ASM1166"
+  addOn?: boolean; // not the platform chipset — an additional controller (e.g. an add-in card)
+}
+
 export interface DiskDevice extends SmartHealth {
   name: string;
   model?: string;
@@ -284,6 +292,7 @@ export interface DiskDevice extends SmartHealth {
   type?: string;
   isSystem: boolean;
   unreachable?: boolean; // lsblk still lists it but it stopped responding (likely hot-unplugged)
+  controller?: StorageController; // SATA only; absent for NVMe/USB
   partitions?: DiskPartition[];
 }
 export interface DisksResponse {

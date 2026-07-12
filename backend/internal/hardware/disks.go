@@ -23,6 +23,15 @@ type DiskPartition struct {
 	Percent   float64 `json:"percent,omitempty"`
 }
 
+// StorageController identifies the PCI controller a SATA disk hangs off. Port
+// numbers are per-controller — a chipset port 1 and an add-in card's port 1 are
+// different physical sockets — so the controller is what disambiguates them.
+type StorageController struct {
+	PCI   string `json:"pci,omitempty"`   // short PCI address, "06:00.0"
+	Name  string `json:"name,omitempty"`  // "ASMedia ASM1166" / "AMD X370 Series Chipset"
+	AddOn bool   `json:"addOn,omitempty"` // not the platform's own chipset — an additional controller
+}
+
 // DiskDevice is a whole physical disk and its partitions (for the Disks tab).
 type DiskDevice struct {
 	Name       string `json:"name"` // "nvme0n1", "sda"
@@ -38,6 +47,9 @@ type DiskDevice struct {
 	// typically a SATA hot-unplug the kernel never reaped (its stale node lingers
 	// until a rescan/reboot). The UI marks it instead of implying it's healthy.
 	Unreachable bool `json:"unreachable,omitempty"`
+	// Controller is the SATA controller this disk hangs off (nil for NVMe/USB, or
+	// when it can't be resolved). Needed because Port is only unique per controller.
+	Controller *StorageController `json:"controller,omitempty"`
 	// SMART (best-effort, from the ~30s cache) — symmetric with the System-tab disk card.
 	// Embedded so health/tempC/firmware/powerOnHours/lifePercent/… serialize inline.
 	SmartHealth
@@ -126,6 +138,7 @@ func (c *Collector) Disks() []DiskDevice {
 	c.mu.RLock()
 	smart := c.smart     // copy-on-write snapshot; safe to read after unlock
 	smartOK := c.smartOK // per-disk last-SMART-OK times (liveness)
+	ctrls := c.ctrl      // PCI address → SATA controller identity (static topology)
 	c.mu.RUnlock()
 	now := time.Now()
 
@@ -151,6 +164,13 @@ func (c *Collector) Disks() []DiskDevice {
 			d.SmartHealth = sd
 		}
 		d.Unreachable = diskUnreachable(n.Name, n.Tran, live, smartOK[n.Name], now)
+		// Port numbers restart at 1 on every controller, so a SATA disk is only
+		// unambiguous together with the controller it hangs off.
+		if isSATA(n.Tran) {
+			if ct, ok := ctrls[devicePCIAddr(n.Name)]; ok {
+				d.Controller = &ct
+			}
+		}
 		for _, ch := range n.Children {
 			d.Partitions = append(d.Partitions, partition(ch))
 		}
@@ -166,13 +186,116 @@ func (c *Collector) Disks() []DiskDevice {
 //   - a disk that used to answer SMART (lastOK non-zero) has gone silent
 //     (live==false) for more than two probe cycles.
 func diskUnreachable(name, tran string, live bool, lastOK, now time.Time) bool {
-	if !strings.EqualFold(tran, "sata") && !strings.EqualFold(tran, "ata") {
+	if !isSATA(tran) {
 		return false
 	}
 	if readSysStr("/sys/block/"+name+"/device/state") == "offline" {
 		return true
 	}
 	return !live && !lastOK.IsZero() && now.Sub(lastOK) > 2*smartInterval
+}
+
+// isSATA reports whether an lsblk transport is a SATA/ATA link.
+func isSATA(tran string) bool {
+	return strings.EqualFold(tran, "sata") || strings.EqualFold(tran, "ata")
+}
+
+// lspciQuoted pulls the quoted class/vendor/device fields out of an `lspci -mm` row:
+//
+//	06:00.0 "SATA controller" "ASMedia Technology Inc." "ASM1166 Serial ATA Controller" -r02 …
+var lspciQuoted = regexp.MustCompile(`"([^"]*)"`)
+
+// probeControllers maps each PCI address to the controller identity we show for the
+// disks hanging off it. One unprivileged `lspci -mm` call; the PCI topology is static,
+// so the Collector caches this with the static probe. Nil when lspci is unavailable
+// (the Disks tab then simply omits the controller row).
+func probeControllers() map[string]StorageController {
+	out, ok := runCmd(cmdTimeout, "lspci", "-mm")
+	if !ok {
+		return nil
+	}
+	// The platform's own vendor, read off the host bridge. A storage controller from
+	// any other vendor isn't part of the chipset — it's an add-in card or an extra
+	// chip on the board. This is the generic test; no per-model knowledge.
+	hostVendor := readSysStr("/sys/bus/pci/devices/0000:00:00.0/vendor")
+
+	m := map[string]StorageController{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		q := lspciQuoted.FindAllStringSubmatch(line, -1)
+		if len(fields) == 0 || len(q) < 3 {
+			continue
+		}
+		short := fields[0] // lspci omits the 0000 domain
+		full := normalizePCI(short)
+		vendor := readSysStr("/sys/bus/pci/devices/" + full + "/vendor")
+		m[full] = StorageController{
+			PCI:   short,
+			Name:  controllerName(q[1][1], q[2][1]), // vendor string, device string
+			AddOn: hostVendor != "" && vendor != "" && vendor != hostVendor,
+		}
+	}
+	return m
+}
+
+// normalizePCI restores the default domain that lspci omits ("06:00.0" → "0000:06:00.0").
+func normalizePCI(addr string) string {
+	if strings.Count(addr, ":") < 2 {
+		return "0000:" + addr
+	}
+	return addr
+}
+
+// controllerNoise are the trailing words pci.ids appends to nearly every storage
+// controller's model name; dropping them keeps the label wearable ("ASM1166").
+var controllerNoise = []string{
+	"Serial ATA Controller", "SATA Controller", "AHCI Controller",
+	"RAID Controller", "IDE Controller", "Controller",
+}
+
+// controllerName builds a short human label from lspci's vendor + device strings, e.g.
+// ("ASMedia Technology Inc.", "ASM1166 Serial ATA Controller") → "ASMedia ASM1166".
+// The vendor is dropped when the model already carries it.
+func controllerName(vendor, device string) string {
+	v := vendorShort(vendor)
+	d := strings.TrimSpace(device)
+	for _, n := range controllerNoise {
+		if t, cut := trimSuffixFold(d, n); cut {
+			d = t
+			break
+		}
+	}
+	switch {
+	case d == "":
+		return v
+	case v == "" || strings.HasPrefix(strings.ToLower(d), strings.ToLower(v)):
+		return d
+	}
+	return v + " " + d
+}
+
+// vendorBracketRe catches pci.ids' short alias, e.g. "Advanced Micro Devices, Inc. [AMD]".
+var vendorBracketRe = regexp.MustCompile(`\[([^\]]+)\]`)
+
+// vendorShort reduces a pci.ids vendor string to something that fits in a label: the
+// bracketed alias when present, else the first word ("ASMedia Technology Inc." → "ASMedia").
+func vendorShort(vendor string) string {
+	if m := vendorBracketRe.FindStringSubmatch(vendor); m != nil {
+		return m[1]
+	}
+	f := strings.Fields(vendor)
+	if len(f) == 0 {
+		return ""
+	}
+	return strings.Trim(f[0], ",")
+}
+
+// trimSuffixFold strips a case-insensitive suffix, reporting whether it matched.
+func trimSuffixFold(s, suffix string) (string, bool) {
+	if len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix) {
+		return strings.TrimSpace(s[:len(s)-len(suffix)]), true
+	}
+	return s, false
 }
 
 // wholeDiskNames lists the base names of every whole physical disk (type "disk").

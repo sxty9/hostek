@@ -152,12 +152,13 @@ type gpuDynamic struct {
 // (~2 s) behind a single RWMutex. Get() only reads caches; it never shells out.
 type Collector struct {
 	mu        sync.RWMutex
-	st        Info                   // static probe
-	dyn       dynamic                // live values, merged into Get()
-	smart     map[string]SmartHealth // per-disk SMART (keyed by base name), ~30s refresh
-	smartOK   map[string]time.Time   // per-disk last successful SMART probe (disk liveness)
-	thermCrit []ThermalMeta          // temperature-measurable components + critical limits
-	thermRing []ThermalSample        // temperature time-series (~6 min)
+	st        Info                         // static probe
+	dyn       dynamic                      // live values, merged into Get()
+	smart     map[string]SmartHealth       // per-disk SMART (keyed by base name), ~30s refresh
+	smartOK   map[string]time.Time         // per-disk last successful SMART probe (disk liveness)
+	ctrl      map[string]StorageController // PCI address → storage-controller identity (static topology)
+	thermCrit []ThermalMeta                // temperature-measurable components + critical limits
+	thermRing []ThermalSample              // temperature time-series (~6 min)
 }
 
 // New returns an idle collector. Call Start to begin background probing.
@@ -263,8 +264,13 @@ func (c *Collector) probeStatic() {
 	info.Disk = probeSystemDisk()
 	info.NICs = probeNICs()
 
+	// PCI storage controllers (chipset vs add-in) — static topology, so it rides
+	// along with the 10-min probe rather than costing an lspci on every Disks() call.
+	ctrls := probeControllers()
+
 	c.mu.Lock()
 	c.st = info
+	c.ctrl = ctrls
 	c.mu.Unlock()
 
 	// Temperature-measurable components + critical limits (uses the just-published

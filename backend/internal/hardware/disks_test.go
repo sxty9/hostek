@@ -85,6 +85,65 @@ func TestNvmePortFallback(t *testing.T) {
 	}
 }
 
+// controllerName turns lspci's verbose vendor/device strings into a short label:
+// the pci.ids bracketed alias wins for the vendor, and the trailing
+// "…SATA Controller" noise is stripped off the model.
+func TestControllerName(t *testing.T) {
+	cases := []struct{ vendor, device, want string }{
+		{"ASMedia Technology Inc.", "ASM1166 Serial ATA Controller", "ASMedia ASM1166"},
+		{"Advanced Micro Devices, Inc. [AMD]", "X370 Series Chipset SATA Controller", "AMD X370 Series Chipset"},
+		{"Intel Corporation", "Cannon Lake PCH SATA AHCI Controller", "Intel Cannon Lake PCH SATA"},
+		{"Marvell Technology Group Ltd.", "88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller", "Marvell 88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s"},
+		{"ASMedia Technology Inc.", "ASMedia ASM1062 SATA Controller", "ASMedia ASM1062"}, // vendor not doubled
+		{"ASMedia Technology Inc.", "", "ASMedia"},                                        // model unknown
+		{"", "ASM1166 Serial ATA Controller", "ASM1166"},                                  // vendor unknown
+	}
+	for _, c := range cases {
+		if got := controllerName(c.vendor, c.device); got != c.want {
+			t.Errorf("controllerName(%q, %q) = %q, want %q", c.vendor, c.device, got, c.want)
+		}
+	}
+}
+
+// normalizePCI restores the domain lspci omits, and leaves explicit domains alone.
+func TestNormalizePCI(t *testing.T) {
+	for in, want := range map[string]string{
+		"06:00.0":      "0000:06:00.0",
+		"0000:06:00.0": "0000:06:00.0",
+		"0001:06:00.0": "0001:06:00.0",
+	} {
+		if got := normalizePCI(in); got != want {
+			t.Errorf("normalizePCI(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// probeControllers must agree with this host's real PCI topology: every SATA disk
+// resolves to a controller, and the add-on flag is set iff that controller's vendor
+// differs from the host bridge's. Skips cleanly where lspci/sysfs aren't available.
+func TestProbeControllersSmoke(t *testing.T) {
+	ctrls := probeControllers()
+	if len(ctrls) == 0 {
+		t.Skip("lspci unavailable — nothing to check")
+	}
+	hostVendor := readSysStr("/sys/bus/pci/devices/0000:00:00.0/vendor")
+	for _, name := range wholeDiskNames() {
+		pci := devicePCIAddr(name)
+		ct, ok := ctrls[pci]
+		if pci == "" || !ok {
+			continue // NVMe-less/virtio/USB topologies — not our business here
+		}
+		if ct.Name == "" {
+			t.Errorf("disk %s: controller %s resolved to an empty name", name, pci)
+		}
+		vendor := readSysStr("/sys/bus/pci/devices/" + pci + "/vendor")
+		if want := hostVendor != "" && vendor != "" && vendor != hostVendor; ct.AddOn != want {
+			t.Errorf("disk %s on %s (vendor %s, host %s): AddOn = %v, want %v",
+				name, pci, vendor, hostVendor, ct.AddOn, want)
+		}
+	}
+}
+
 // sataPort returns the real controller port for whichever SATA disks this host
 // actually has (skips cleanly when none/unreadable). It's an integration-style
 // smoke test: we only assert the resolver doesn't return garbage for real disks.

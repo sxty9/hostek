@@ -89,8 +89,18 @@ const portNum = (d: DiskDevice): number => {
   const m = /Port\s+(\d+)/.exec(d.port ?? '');
   return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
 };
+// Ports restart at 1 on every controller, so disks must be grouped by controller
+// before the port number means anything: the platform's own chipset first, then any
+// add-in controllers (stable across identical cards via their PCI address).
+const ctrlRank = (d: DiskDevice): number => (d.controller?.addOn ? 1 : 0);
+const ctrlPci = (d: DiskDevice): string => d.controller?.pci ?? '';
+
 const byCategoryThenPort = (a: DiskDevice, b: DiskDevice): number =>
-  catRank(a) - catRank(b) || portNum(a) - portNum(b) || a.name.localeCompare(b.name);
+  catRank(a) - catRank(b) ||
+  ctrlRank(a) - ctrlRank(b) ||
+  ctrlPci(a).localeCompare(ctrlPci(b)) ||
+  portNum(a) - portNum(b) ||
+  a.name.localeCompare(b.name);
 
 // One label/value row in the SMART block; a string value is rendered as tabular text,
 // anything else (e.g. a Badge) is rendered as-is.
@@ -234,10 +244,21 @@ function DiskCard({ d }: { d: DiskDevice }) {
           </Stack>
         </Stack>
 
-        {/* Connection — which mainboard SATA port (or NVMe/USB) the disk hangs off */}
-        {connection && (
-          <Stack className="border-t border-separator pt-2">
-            <InfoRow label={t('hostek.connection')}>{connection}</InfoRow>
+        {/* Connection — which port the disk hangs off, plus the controller that owns
+            that port (a chipset port 3 and an add-in card's port 3 are different sockets). */}
+        {(connection || d.controller) && (
+          <Stack gap={1} className="border-t border-separator pt-2">
+            {connection && <InfoRow label={t('hostek.connection')}>{connection}</InfoRow>}
+            {d.controller && (
+              <InfoRow label={t('hostek.controller')}>
+                <Stack direction="row" align="center" gap={2} className="min-w-0">
+                  <Text variant="footnote" truncate>
+                    {d.controller.name || d.controller.pci}
+                  </Text>
+                  {d.controller.addOn && <Badge variant="accent">{t('hostek.addOn')}</Badge>}
+                </Stack>
+              </InfoRow>
+            )}
           </Stack>
         )}
 
