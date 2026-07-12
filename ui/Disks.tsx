@@ -74,6 +74,24 @@ const statusVariant = (s: DiskDevice['healthStatus']): 'success' | 'warning' | '
 // Remaining-life % → bar tone (green→amber→red as endurance runs out).
 const lifeTone = (p: number): 'ssd' | 'warning' | 'danger' => (p <= 10 ? 'danger' : p <= 25 ? 'warning' : 'ssd');
 
+// Stable list order: category first (NVMe → SATA → USB → rest), then ascending by
+// physical port within the category. catRank buckets by transport; portNum parses
+// the SATA port out of the backend's "SATA Port N" label (non-SATA has no number,
+// so it sinks to the end of its bucket where the device-name tiebreak orders it).
+const catRank = (d: DiskDevice): number => {
+  const t = (d.transport ?? '').toLowerCase();
+  if (t === 'nvme') return 0;
+  if (t === 'sata' || t === 'ata') return 1;
+  if (t === 'usb') return 2;
+  return 3;
+};
+const portNum = (d: DiskDevice): number => {
+  const m = /Port\s+(\d+)/.exec(d.port ?? '');
+  return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+};
+const byCategoryThenPort = (a: DiskDevice, b: DiskDevice): number =>
+  catRank(a) - catRank(b) || portNum(a) - portNum(b) || a.name.localeCompare(b.name);
+
 // One label/value row in the SMART block; a string value is rendered as tabular text,
 // anything else (e.g. a Badge) is rendered as-is.
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
@@ -151,10 +169,16 @@ function DiskCard({ d }: { d: DiskDevice }) {
           <Stack gap={0} className="min-w-0 grow">
             <Stack direction="row" align="center" gap={2}>
               <Marquee text={d.model || d.name} className="min-w-0 grow text-subhead font-semibold text-text-primary" />
+              {d.unreachable && <Badge variant="danger">{t('hostek.unreachable')}</Badge>}
               {d.isSystem && <Badge variant="accent">{t('hostek.systemBadge')}</Badge>}
               {d.type && <Badge variant="neutral">{d.type}</Badge>}
             </Stack>
             <Marquee text={subtitle} className="text-caption text-text-secondary" />
+            {d.unreachable && (
+              <Text variant="caption" color="tertiary">
+                {t('hostek.unreachableHint')}
+              </Text>
+            )}
           </Stack>
         </Stack>
 
@@ -320,8 +344,8 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
     );
   }
 
-  // System disk first, then alphabetically by device name.
-  const disks = [...(data.disks ?? [])].sort((a, b) => Number(b.isSystem) - Number(a.isSystem) || a.name.localeCompare(b.name));
+  // Fixed order: NVMe → SATA → USB, ascending by physical port within each group.
+  const disks = [...(data.disks ?? [])].sort(byCategoryThenPort);
 
   if (disks.length === 0) {
     return <EmptyState icon={<DiskIcon />} title={t('hostek.noDisks')} description={t('hostek.noDisksDesc')} />;

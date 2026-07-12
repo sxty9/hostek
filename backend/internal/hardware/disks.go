@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/shirou/gopsutil/v4/disk"
 
@@ -33,6 +34,10 @@ type DiskDevice struct {
 	Rotational bool   `json:"rotational"`
 	Type       string `json:"type,omitempty"` // "NVMe"/"SSD"/"HDD"
 	IsSystem   bool   `json:"isSystem"`
+	// Unreachable flags a disk lsblk still lists but that has stopped responding —
+	// typically a SATA hot-unplug the kernel never reaped (its stale node lingers
+	// until a rescan/reboot). The UI marks it instead of implying it's healthy.
+	Unreachable bool `json:"unreachable,omitempty"`
 	// SMART (best-effort, from the ~30s cache) — symmetric with the System-tab disk card.
 	// Embedded so health/tempC/firmware/powerOnHours/lifePercent/… serialize inline.
 	SmartHealth
@@ -119,8 +124,10 @@ func (c *Collector) Disks() []DiskDevice {
 
 	root := diskutil.RootDevice() // whole-disk name backing "/"
 	c.mu.RLock()
-	smart := c.smart // copy-on-write snapshot; safe to read after unlock
+	smart := c.smart     // copy-on-write snapshot; safe to read after unlock
+	smartOK := c.smartOK // per-disk last-SMART-OK times (liveness)
 	c.mu.RUnlock()
+	now := time.Now()
 
 	var devices []DiskDevice
 	for _, n := range doc.Blockdevices {
@@ -139,15 +146,33 @@ func (c *Collector) Disks() []DiskDevice {
 			Port:       portLabel(n.Tran, n.Name),
 			IsSystem:   root != "" && n.Name == root,
 		}
-		if sd, ok := smart[n.Name]; ok {
+		sd, live := smart[n.Name]
+		if live {
 			d.SmartHealth = sd
 		}
+		d.Unreachable = diskUnreachable(n.Name, n.Tran, live, smartOK[n.Name], now)
 		for _, ch := range n.Children {
 			d.Partitions = append(d.Partitions, partition(ch))
 		}
 		devices = append(devices, d)
 	}
 	return devices
+}
+
+// diskUnreachable reports whether a whole disk lsblk still lists is very likely a
+// stale node — hot-unplugged but not reaped by the kernel (common on boards
+// without working SATA hotplug). Scoped to SATA/ATA. Two independent signals:
+//   - the SCSI device flipped to "offline"; or
+//   - a disk that used to answer SMART (lastOK non-zero) has gone silent
+//     (live==false) for more than two probe cycles.
+func diskUnreachable(name, tran string, live bool, lastOK, now time.Time) bool {
+	if !strings.EqualFold(tran, "sata") && !strings.EqualFold(tran, "ata") {
+		return false
+	}
+	if readSysStr("/sys/block/"+name+"/device/state") == "offline" {
+		return true
+	}
+	return !live && !lastOK.IsZero() && now.Sub(lastOK) > 2*smartInterval
 }
 
 // wholeDiskNames lists the base names of every whole physical disk (type "disk").

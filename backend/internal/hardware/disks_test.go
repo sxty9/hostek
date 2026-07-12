@@ -1,6 +1,38 @@
 package hardware
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// diskUnreachable flags a SATA/ATA disk lsblk still lists but that has gone silent
+// on SMART for >2 probe cycles (the stale-node case). The SCSI-"offline" branch
+// needs real sysfs, so here we exercise the SMART-liveness logic with fake names
+// (no /sys/block entry → the state read is "", falling through to the time check).
+func TestDiskUnreachable(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	stale := now.Add(-3 * smartInterval) // older than the 2-cycle grace
+	fresh := now.Add(-10 * time.Second)  // within grace
+	cases := []struct {
+		desc, tran string
+		live       bool
+		lastOK     time.Time
+		want       bool
+	}{
+		{"nvme is never flagged here", "nvme", false, stale, false},
+		{"answering SATA is fine", "sata", true, now, false},
+		{"SATA that never did SMART", "sata", false, time.Time{}, false},
+		{"silent but within grace", "sata", false, fresh, false},
+		{"silent past grace → unreachable", "sata", false, stale, true},
+		{"ata alias, silent past grace", "ata", false, stale, true},
+	}
+	for _, c := range cases {
+		got := diskUnreachable("hostek-fake-disk", c.tran, c.live, c.lastOK, now)
+		if got != c.want {
+			t.Errorf("%s: diskUnreachable(tran=%q,live=%v) = %v, want %v", c.desc, c.tran, c.live, got, c.want)
+		}
+	}
+}
 
 // portLabel maps transport families to friendly hints; SATA disks additionally
 // carry the resolved mainboard port. Here we exercise the transport branches and

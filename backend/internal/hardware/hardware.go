@@ -152,11 +152,12 @@ type gpuDynamic struct {
 // (~2 s) behind a single RWMutex. Get() only reads caches; it never shells out.
 type Collector struct {
 	mu        sync.RWMutex
-	st        Info                 // static probe
-	dyn       dynamic              // live values, merged into Get()
+	st        Info                   // static probe
+	dyn       dynamic                // live values, merged into Get()
 	smart     map[string]SmartHealth // per-disk SMART (keyed by base name), ~30s refresh
-	thermCrit []ThermalMeta        // temperature-measurable components + critical limits
-	thermRing []ThermalSample      // temperature time-series (~6 min)
+	smartOK   map[string]time.Time   // per-disk last successful SMART probe (disk liveness)
+	thermCrit []ThermalMeta          // temperature-measurable components + critical limits
+	thermRing []ThermalSample        // temperature time-series (~6 min)
 }
 
 // New returns an idle collector. Call Start to begin background probing.
@@ -191,16 +192,31 @@ func (c *Collector) Start() {
 	}()
 }
 
-// probeSmart refreshes the SMART cache for every whole disk via the privileged wrapper.
+// probeSmart refreshes the SMART cache for every whole disk via the privileged
+// wrapper, and tracks per-disk SMART liveness so Disks() can spot a stale node a
+// hot-unplug left behind (a SATA disk lsblk still lists but that stopped answering).
 func (c *Collector) probeSmart() {
+	names := wholeDiskNames()
 	m := map[string]SmartHealth{}
-	for _, name := range wholeDiskNames() {
+	for _, name := range names {
 		if out, ok := sudoHwinfo(cmdTimeout, "smart", "/dev/"+name); ok {
 			m[name] = parseSmartData(out)
 		}
 	}
+	now := time.Now()
 	c.mu.Lock()
+	// Stamp "now" for disks that answered, carry the previous success time forward
+	// for present-but-silent disks, and drop disks that left lsblk entirely.
+	ok := make(map[string]time.Time, len(names))
+	for _, name := range names {
+		if _, responded := m[name]; responded {
+			ok[name] = now
+		} else if prev, had := c.smartOK[name]; had {
+			ok[name] = prev
+		}
+	}
 	c.smart = m
+	c.smartOK = ok
 	c.mu.Unlock()
 }
 

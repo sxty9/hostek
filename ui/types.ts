@@ -283,6 +283,7 @@ export interface DiskDevice extends SmartHealth {
   rotational: boolean;
   type?: string;
   isSystem: boolean;
+  unreachable?: boolean; // lsblk still lists it but it stopped responding (likely hot-unplugged)
   partitions?: DiskPartition[];
 }
 export interface DisksResponse {
