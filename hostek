@@ -288,6 +288,19 @@ protected_mount() {
   esac
 }
 
+# A single path component built from an untrusted string (a filesystem label): keep only
+# safe characters, then require a leading alphanumeric so "." / ".." — which would climb out
+# of /media/hostek — can never be the result. Prints the cleaned component, or nothing if the
+# input can't yield a safe one (the caller then falls back to the kernel device name).
+safe_name() {
+  local s; s="$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+  [[ "$s" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && printf '%s' "$s"
+  # Always succeed: a rejected name is a normal outcome (caller falls back to the device
+  # name), and a non-zero return here would abort the whole wrapper under `set -e` at the
+  # bare `leaf="$(safe_name ...)"` assignment.
+  return 0
+}
+
 # The whole disk that carries "/" — the one disk that must never be detached. Derived from
 # the kernel: the root filesystem's source device, walked up to its parent disk (PKNAME is
 # empty when root sits directly on the disk, hence the fallback).
@@ -370,22 +383,33 @@ case "$verb" in
       exit 0
     fi
 
-    # Otherwise: /media/hostek/<label|uuid|name>, hardened. nosuid,nodev because the drive
-    # is untrusted; the filesystem itself decides whether it can do anything else.
-    label="$(lsblk -nro LABEL "$dev" 2>/dev/null | head -n1 || true)"
-    uuid="$(lsblk -nro UUID "$dev" 2>/dev/null | head -n1 || true)"
-    base="$label"; [ -n "$base" ] || base="$uuid"; [ -n "$base" ] || base="$name"
-    base="$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '_')"
-    # The label comes off the drive itself, i.e. from whoever formatted it — so it is
-    # attacker-controlled input. Sanitising the characters is not enough: a drive labelled
-    # ".." would still resolve /media/hostek/.. to /media and mount straight over it. Demand
-    # a leading alphanumeric, which "." and ".." cannot satisfy, and fall back to the kernel
-    # name (always safe) for anything else.
-    [[ "$base" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || base="$name"
-    target="/media/hostek/$base"
+    # Otherwise mount under /media/hostek/<disk>/<leaf>. Two levels, on purpose:
+    #   <disk>  the parent whole-disk name (sdb, nvme0n1) — groups a drive's partitions
+    #           together and, crucially, keeps two DIFFERENT drives that happen to share a
+    #           label (very common: NTFS volumes all called "Data", or blank) in separate
+    #           directories instead of fighting over one path;
+    #   <leaf>  the volume label when it has a usable one, else the kernel partition name.
+    # The label is read off the drive (attacker-controlled), so safe_name() both scrubs it and
+    # refuses a climbing name like ".."; a rejected label falls back to the partition name.
+    disk="$(lsblk -nro PKNAME "$dev" 2>/dev/null | head -n1 | tr -d ' ' || true)"
+    disk="$(safe_name "$disk")"; [ -n "$disk" ] || disk="$name"
+    # Non-raw (-no, not -nro) so a label with spaces arrives as "My Book", not the raw
+    # escaping "My\x20Book"; safe_name then turns the space into "_" for a clean "My_Book".
+    # safe_name scrubs every other character regardless, so dropping the escaping is safe.
+    leaf="$(safe_name "$(lsblk -no LABEL "$dev" 2>/dev/null | head -n1 || true)")"
+    [ -n "$leaf" ] || leaf="$name"
+    target="/media/hostek/$disk/$leaf"
+    # If a DIFFERENT device is already mounted at that exact path — two partitions on the same
+    # disk that share a label — disambiguate with the kernel partition name. That name is
+    # unique by construction, so hostek never overmounts one volume on top of another (which is
+    # what the old flat /media/hostek/<label> did: both "Data" volumes landed on one path, the
+    # second silently shadowing the first).
+    occ="$(findmnt -nro SOURCE -M "$target" 2>/dev/null | head -n1 || true)"
+    [ -n "$occ" ] && [ "$occ" != "$dev" ] && target="/media/hostek/$disk/$name"
     mkdir -p "$target"
     if ! mount -o nosuid,nodev "$dev" "$target" 2>/dev/null; then
       rmdir "$target" 2>/dev/null || true
+      rmdir "/media/hostek/$disk" 2>/dev/null || true
       echo "cannot mount $dev ($fstype) — the filesystem was refused by the kernel" >&2; exit 4
     fi
     printf '%s\n' "$target"
@@ -396,8 +420,13 @@ case "$verb" in
     tgt="$(findmnt -nro TARGET -S "$dev" 2>/dev/null | head -n1 || true)"
     [ -n "$tgt" ] || { echo "$dev is not mounted" >&2; exit 2; }
     release_device "$dev"
-    # Clean up an empty directory we created ourselves; never touch anything else.
-    case "$tgt" in /media/hostek/*) rmdir "$tgt" 2>/dev/null || true ;; esac
+    # Remove the empty directories we created, and nothing else: the <leaf>, then its <disk>
+    # parent if no other partition of that disk is still mounted (rmdir fails safely if not).
+    # The bare /media/hostek/* case keeps cleaning up mounts made by the old flat scheme.
+    case "$tgt" in
+      /media/hostek/*/*) rmdir "$tgt" 2>/dev/null || true; rmdir "$(dirname "$tgt")" 2>/dev/null || true ;;
+      /media/hostek/*)   rmdir "$tgt" 2>/dev/null || true ;;
+    esac
     ;;
 
   eject)
@@ -418,6 +447,14 @@ case "$verb" in
       [ -n "$node" ] || continue
       release_device "$node"
     done < <(disk_tree_leaf_first "$dev")
+
+    # Tidy the mount dirs we created for this disk's partitions (/media/hostek/<name>/*), now
+    # that they are all unmounted. rmdir only removes empties, so anything unexpected is left
+    # untouched. $name is a validated kernel name, so the glob can't reach outside this disk.
+    if [ -d "/media/hostek/$name" ]; then
+      rmdir "/media/hostek/$name"/* 2>/dev/null || true
+      rmdir "/media/hostek/$name" 2>/dev/null || true
+    fi
 
     sync
     blockdev --flushbufs "$dev" 2>/dev/null || true
