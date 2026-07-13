@@ -1,4 +1,5 @@
 import {
+  ArrowUpIcon,
   Badge,
   Box,
   Button,
@@ -20,7 +21,7 @@ import {
   type ServiceContextProps,
 } from '@holistic/ui';
 import { useState, type ReactNode } from 'react';
-import type { DiskDevice, DisksResponse } from './types';
+import type { DiskDevice, DiskPartition, DisksResponse } from './types';
 
 // The "Rate with AI" button routes disk health through the shared `aigentic` service
 // (apiFor('aigentic') → POST run). We reuse its per-user Anthropic key + billing rather
@@ -74,6 +75,12 @@ const statusVariant = (s: DiskDevice['healthStatus']): 'success' | 'warning' | '
 // Remaining-life % → bar tone (green→amber→red as endurance runs out).
 const lifeTone = (p: number): 'ssd' | 'warning' | 'danger' => (p <= 10 ? 'danger' : p <= 25 ? 'warning' : 'ssd');
 
+// Filesystem types that are a container/member, not something the kernel can mount as a
+// filesystem. hostek-diskctl refuses them anyway — this only keeps us from offering a
+// Mount button that could never work. An empty fstype (unformatted) is equally unmountable.
+const CONTAINER_FS = new Set(['swap', 'crypto_luks', 'lvm2_member', 'linux_raid_member', 'zfs_member']);
+const isMountable = (p: DiskPartition): boolean => !!p.fstype && !CONTAINER_FS.has(p.fstype.toLowerCase());
+
 // Stable list order: category first (NVMe → SATA → USB → rest), then ascending by
 // physical port within the category. catRank buckets by transport; portNum parses
 // the SATA port out of the backend's "SATA Port N" label (non-SATA has no number,
@@ -121,9 +128,44 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function DiskCard({ d }: { d: DiskDevice }) {
+// Shown in the SMART slot of a drive the kernel has just handed us: it is listed and
+// sized, but the background probe hasn't read its health yet (`smartPending`). Without
+// this the card would render an unexplained gap that reads like "no SMART to report".
+// The pulsing halo behind the spinner picks up the ssd accent the card's icon uses.
+function SmartPendingBlock() {
   const t = useT();
-  const mounts = (d.partitions ?? []).filter((p) => p.mount);
+  return (
+    <Stack direction="row" align="center" gap={3} className="border-t border-separator pt-3">
+      <Box className="relative flex h-9 w-9 shrink-0 items-center justify-center">
+        <Box className="absolute inset-0 animate-ping rounded-full bg-ssd/20" />
+        <Spinner className="h-6 w-6 text-ssd" />
+      </Box>
+      <Stack gap={0} className="min-w-0">
+        <Text variant="footnote" weight="medium">
+          {t('hostek.smartPending')}
+        </Text>
+        <Text variant="caption" color="tertiary">
+          {t('hostek.smartPendingHint')}
+        </Text>
+      </Stack>
+    </Stack>
+  );
+}
+
+interface DiskCardProps {
+  d: DiskDevice;
+  canMount: boolean;
+  canEject: boolean;
+  busy: string | null; // device name of the action in flight, if any
+  onMount: (p: DiskPartition) => void;
+  onUnmount: (p: DiskPartition) => void;
+  onEject: (d: DiskDevice) => void;
+}
+
+function DiskCard({ d, canMount, canEject, busy, onMount, onUnmount, onEject }: DiskCardProps) {
+  const t = useT();
+  const partitions = d.partitions ?? [];
+  const mounts = partitions.filter((p) => p.mount);
   // Usage is filesystem-level (sum over mounted partitions) so the donut tracks the
   // partition rows below; fall back to the raw device size when nothing is mounted.
   // Clamp so unusual backend numbers (e.g. overlapping mounts) can't overdraw the ring.
@@ -262,7 +304,10 @@ function DiskCard({ d }: { d: DiskDevice }) {
           </Stack>
         )}
 
-        {/* SMART / health (symmetric with the System-tab disk card) */}
+        {/* SMART / health (symmetric with the System-tab disk card). A drive whose SMART
+            is still being read shows a spinner here instead; data always wins over the
+            spinner, so a disk with values can never appear to be still loading. */}
+        {!hasSmart && d.smartPending && <SmartPendingBlock />}
         {hasSmart && (
           <Stack gap={2} className="border-t border-separator pt-2">
             {/* Derived verdict + optional reason */}
@@ -326,24 +371,60 @@ function DiskCard({ d }: { d: DiskDevice }) {
           </Stack>
         )}
 
-        {/* Mounted partitions */}
-        {mounts.length > 0 && (
-          <Stack gap={1} className="border-t border-separator pt-2">
-            {mounts.map((p) => (
-              <Stack key={p.name} direction="row" justify="between" gap={3} align="baseline">
-                <Stack direction="row" gap={1} align="baseline" className="min-w-0">
+        {/* Partitions — every one, not just the mounted ones: an unmounted partition is
+            precisely what you came here to mount, so hiding it would hide the action. */}
+        {partitions.length > 0 && (
+          <Stack gap={2} className="border-t border-separator pt-2">
+            {partitions.map((p) => (
+              <Stack key={p.name} direction="row" justify="between" gap={3} align="center">
+                <Stack gap={0} className="min-w-0">
                   <Text variant="caption" truncate>
-                    {p.mount}
+                    {p.mount || `/dev/${p.name}`}
                   </Text>
-                  <Text variant="caption" color="tertiary">
-                    {p.fstype}
+                  <Text variant="caption" color="tertiary" truncate>
+                    {join(p.fstype || t('hostek.noFilesystem'), !p.mount && formatBytes(p.sizeBytes))}
                   </Text>
                 </Stack>
-                <Text variant="caption" color="secondary" className="tabular-nums shrink-0">
-                  {formatBytes(p.used ?? 0)} / {formatBytes(p.total ?? p.sizeBytes)} · {(p.percent ?? 0).toFixed(0)}%
-                </Text>
+                <Stack direction="row" align="center" gap={2} className="shrink-0">
+                  {p.mount ? (
+                    <Text variant="caption" color="secondary" className="tabular-nums">
+                      {formatBytes(p.used ?? 0)} / {formatBytes(p.total ?? p.sizeBytes)} · {(p.percent ?? 0).toFixed(0)}%
+                    </Text>
+                  ) : null}
+                  {/* isMountable gates Unmount too, not just Mount: an active swap partition
+                      reports a truthy "[SWAP]" mountpoint but has no filesystem the unmount
+                      verb can release, so a bare `p.mount` check would offer a button that
+                      always fails. Symmetric gating keeps the pair honest. */}
+                  {canMount && p.mount && isMountable(p) && (
+                    <Button variant="secondary" size="sm" loading={busy === p.name} onClick={() => onUnmount(p)}>
+                      {t('hostek.unmount')}
+                    </Button>
+                  )}
+                  {canMount && !p.mount && isMountable(p) && (
+                    <Button variant="tinted" size="sm" loading={busy === p.name} onClick={() => onMount(p)}>
+                      {t('hostek.mount')}
+                    </Button>
+                  )}
+                </Stack>
               </Stack>
             ))}
+          </Stack>
+        )}
+
+        {/* Eject. Hidden for the system disk — the backend refuses it, so offering the
+            button would only promise something it will not do. An unreachable disk keeps
+            it: ejecting is exactly how you clear the stale node a hot-unplug left behind. */}
+        {canEject && !d.isSystem && (
+          <Stack direction="row" justify="end" className="border-t border-separator pt-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={busy === d.name}
+              iconLeft={<ArrowUpIcon className="h-4 w-4" />}
+              onClick={() => onEject(d)}
+            >
+              {t('hostek.eject')}
+            </Button>
           </Stack>
         )}
       </Stack>
@@ -353,9 +434,12 @@ function DiskCard({ d }: { d: DiskDevice }) {
 
 export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
   const t = useT();
-  const { data } = useLiveQuery<DisksResponse>(() => api.get<DisksResponse>('disks'), 5000);
+  const { data, refresh } = useLiveQuery<DisksResponse>(() => api.get<DisksResponse>('disks'), 5000);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiResult, setAiResult] = useState<{ prompt: string; output: string; engine?: string; model?: string } | null>(null);
+  // The device name of the storage action in flight — one at a time, so a card can show
+  // which control is working without a second click landing on top of it.
+  const [busy, setBusy] = useState<string | null>(null);
 
   if (!data) {
     return (
@@ -383,6 +467,56 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
 
   // "Rate with AI" routes through aigentic's metered Anthropic API (admins always qualify).
   const canRate = user.isAdmin || user.groups.includes('hp_aigentic_api');
+  // Storage actions are separately granted rights; the daemon enforces them regardless —
+  // this only decides whether we show a control the user is allowed to use.
+  const canMount = user.isAdmin || user.groups.includes('hp_hostek_mount');
+  const canEject = user.isAdmin || user.groups.includes('hp_hostek_eject');
+
+  // The three storage actions share a shape: latch the device busy, run it, say what
+  // happened, then refresh so the card shows the new kernel state at once instead of up
+  // to a poll later. On failure the description is the daemon's forwarded reason from the
+  // privileged wrapper ("cannot unmount /dev/sdb1 — target is busy"), which is the only
+  // part of a failure the user can actually act on.
+  async function storageAction(device: string, failTitle: string, run: () => Promise<{ title: string; description?: string }>) {
+    setBusy(device);
+    try {
+      const done = await run();
+      ui.toast({ title: done.title, description: done.description, variant: 'success' });
+    } catch (e) {
+      ui.toast({ title: failTitle, description: (e as Error).message, variant: 'error' });
+    } finally {
+      setBusy(null);
+      refresh();
+    }
+  }
+
+  const mountPartition = (p: DiskPartition) =>
+    storageAction(p.name, t('hostek.mountFailed'), async () => {
+      const res = await api.post<{ mountpoint?: string }>('disks/mount', { name: p.name });
+      return { title: t('hostek.mounted'), description: res.mountpoint };
+    });
+
+  const unmountPartition = (p: DiskPartition) =>
+    storageAction(p.name, t('hostek.unmountFailed'), async () => {
+      await api.post('disks/unmount', { name: p.name });
+      return { title: t('hostek.unmounted'), description: `/dev/${p.name}` };
+    });
+
+  // Eject detaches the drive from the kernel — it leaves the tab and only comes back on a
+  // rescan/reboot. That is not undoable by clicking again, so it is confirmed first.
+  async function ejectDisk(d: DiskDevice) {
+    const go = await ui.confirm({
+      title: t('hostek.ejectConfirmTitle', { disk: d.model || `/dev/${d.name}` }),
+      description: t('hostek.ejectConfirmBody'),
+      danger: true,
+      confirmLabel: t('hostek.eject'),
+    });
+    if (!go) return;
+    await storageAction(d.name, t('hostek.ejectFailed'), async () => {
+      await api.post('disks/eject', { name: d.name });
+      return { title: t('hostek.ejected'), description: `/dev/${d.name}` };
+    });
+  }
 
   async function rateWithAI() {
     setAiBusy(true);
@@ -483,7 +617,16 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
 
       <Grid minItemWidth={360} gap={3}>
         {disks.map((d) => (
-          <DiskCard key={d.name} d={d} />
+          <DiskCard
+            key={d.name}
+            d={d}
+            canMount={canMount}
+            canEject={canEject}
+            busy={busy}
+            onMount={mountPartition}
+            onUnmount={unmountPartition}
+            onEject={ejectDisk}
+          />
         ))}
       </Grid>
     </Stack>

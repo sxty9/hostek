@@ -50,6 +50,12 @@ type DiskDevice struct {
 	// Controller is the SATA controller this disk hangs off (nil for NVMe/USB, or
 	// when it can't be resolved). Needed because Port is only unique per controller.
 	Controller *StorageController `json:"controller,omitempty"`
+	// SmartPending marks a disk the kernel already lists but the SMART probe has not
+	// run for yet — the gap between plugging a drive in (lsblk sees it instantly) and
+	// the next probe cycle filling the cache. The UI shows a spinner instead of an
+	// empty card. It stays false for a disk that was probed and simply has no SMART
+	// to report (USB bridges, card readers), so those don't spin forever.
+	SmartPending bool `json:"smartPending,omitempty"`
 	// SMART (best-effort, from the ~30s cache) — symmetric with the System-tab disk card.
 	// Embedded so health/tempC/firmware/powerOnHours/lifePercent/… serialize inline.
 	SmartHealth
@@ -136,12 +142,14 @@ func (c *Collector) Disks() []DiskDevice {
 
 	root := diskutil.RootDevice() // whole-disk name backing "/"
 	c.mu.RLock()
-	smart := c.smart     // copy-on-write snapshot; safe to read after unlock
-	smartOK := c.smartOK // per-disk last-SMART-OK times (liveness)
-	ctrls := c.ctrl      // PCI address → SATA controller identity (static topology)
+	smart := c.smart      // copy-on-write snapshot; safe to read after unlock
+	smartOK := c.smartOK  // per-disk last-SMART-OK times (liveness)
+	tried := c.smartTried // per-disk "the SMART probe has run for it" (vs. never seen it)
+	ctrls := c.ctrl       // PCI address → SATA controller identity (static topology)
 	c.mu.RUnlock()
 	now := time.Now()
 
+	pending := false // a disk appeared that the SMART probe has never attempted
 	var devices []DiskDevice
 	for _, n := range doc.Blockdevices {
 		// Only real whole disks — skip loop/rom/ram pseudo-devices.
@@ -163,6 +171,9 @@ func (c *Collector) Disks() []DiskDevice {
 		if live {
 			d.SmartHealth = sd
 		}
+		// Freshly attached: lsblk lists it, the SMART probe hasn't reached it yet.
+		d.SmartPending = !tried[n.Name]
+		pending = pending || d.SmartPending
 		d.Unreachable = diskUnreachable(n.Name, n.Tran, live, smartOK[n.Name], now)
 		// Port numbers restart at 1 on every controller, so a SATA disk is only
 		// unambiguous together with the controller it hangs off.
@@ -175,6 +186,12 @@ func (c *Collector) Disks() []DiskDevice {
 			d.Partitions = append(d.Partitions, partition(ch))
 		}
 		devices = append(devices, d)
+	}
+	// Cut the wait for a just-plugged disk from "up to smartInterval" down to one probe
+	// run. Self-limiting: once the probe has attempted the disk it is in `tried`, so a
+	// device that never yields SMART can't nudge us into probing on every poll.
+	if pending {
+		c.nudgeSmart()
 	}
 	return devices
 }

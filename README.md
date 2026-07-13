@@ -30,8 +30,15 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
   - `hp_hostek_disks` — der **Disks**-Tab (alle Datenträger)
   - `hp_hostek_proc` — Prozessliste + **Processes**-Tab
   - `hp_hostek_power` — OS-Energie/Headless **ändern** + **Config**-Tab (dangerous)
+  - `hp_hostek_mount` — Partitionen **ein-/aushängen** (dangerous)
+  - `hp_hostek_eject` — Datenträger **auswerfen** (dangerous)
 - **Least privilege:** Der Daemon läuft als unprivilegierter User `hostek`; Config-Schreib-
-  zugriffe gehen ausschließlich über den schmalen sudo-Wrapper `hostek-power-set`.
+  zugriffe gehen ausschließlich über den schmalen sudo-Wrapper `hostek-power-set`,
+  Speicheraktionen ausschließlich über `hostek-diskctl`.
+- **Speicheraktionen sind eingezäunt:** `hostek-diskctl` prüft jede Anfrage selbst noch einmal
+  gegen den Kernel — der Datenträger mit `/` lässt sich nicht auswerfen, `/`, `/boot`, `/usr`,
+  `/var`, `/etc` lassen sich nicht aushängen, und Fremd-Laufwerke werden mit `nosuid,nodev`
+  unter `/media/hostek/` eingehängt (der Datenträger-Label kann den Pfad nicht verlassen).
 
 ## Layout
 
@@ -43,6 +50,7 @@ backend/        Go-Daemon (hostekd)
   internal/gpu/     NVIDIA sampling via nvidia-smi (overall + per-process)
   internal/netmon/  per-process network via the privileged hostek-netmon co-process
   internal/hardware/ hardware inventory (System tab) + all-disks list (Disks tab)
+                     + privilegierte Speicheraktionen (diskops.go: mount/unmount/eject)
   internal/diskutil/ root block-device resolution (shared)
   internal/sysconfig/ read/apply headless power settings
   internal/api/     HTTP routes under /api/services/hostek/

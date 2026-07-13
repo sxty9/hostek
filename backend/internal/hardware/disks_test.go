@@ -144,6 +144,66 @@ func TestProbeControllersSmoke(t *testing.T) {
 	}
 }
 
+// SmartPending is what puts the spinner on a Disks-tab card: the kernel lists the
+// drive but the SMART probe hasn't reached it. A collector that has never probed is
+// in exactly the state a freshly plugged disk is in, so it exercises that path
+// without a real hotplug — every disk must be pending, and seeing one must queue the
+// off-schedule probe that ends the spinner.
+func TestDisksPendingBeforeFirstSmartProbe(t *testing.T) {
+	c := New()
+	disks := c.Disks()
+	if len(disks) == 0 {
+		t.Skip("lsblk unavailable — no disks to check")
+	}
+	for _, d := range disks {
+		if !d.SmartPending {
+			t.Errorf("disk %s: SmartPending = false before any SMART probe, want true", d.Name)
+		}
+	}
+	select {
+	case <-c.smartNudge:
+	default:
+		t.Error("Disks() saw never-probed disks but queued no SMART nudge")
+	}
+}
+
+// The mirror image, and the reason `tried` exists at all: once the probe has *run* for
+// a disk, nothing may still report pending — not even a device that yields no SMART
+// (USB bridges, card readers). Those must render as "nothing to report", never as a
+// card that spins forever.
+func TestDisksNotPendingAfterSmartProbe(t *testing.T) {
+	c := New()
+	c.probeSmart()
+	if len(c.smartTried) == 0 {
+		t.Skip("lsblk unavailable — no disks to check")
+	}
+	for _, d := range c.Disks() {
+		if d.SmartPending {
+			t.Errorf("disk %s: still SmartPending after a completed SMART probe", d.Name)
+		}
+	}
+}
+
+// nudgeSmart runs on the request path, so it must never block — neither when the
+// buffer is empty, nor when a nudge is already queued (it coalesces).
+func TestNudgeSmartNeverBlocks(t *testing.T) {
+	c := New()
+	done := make(chan struct{})
+	go func() {
+		c.nudgeSmart()
+		c.nudgeSmart() // buffer already full — must drop, not block
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("nudgeSmart blocked")
+	}
+	if len(c.smartNudge) != 1 {
+		t.Errorf("smartNudge holds %d nudges, want 1 (coalesced)", len(c.smartNudge))
+	}
+}
+
 // sataPort returns the real controller port for whichever SATA disks this host
 // actually has (skips cleanly when none/unreadable). It's an integration-style
 // smoke test: we only assert the resolver doesn't return garbage for real disks.

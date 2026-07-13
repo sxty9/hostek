@@ -7,8 +7,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"hostek/internal/auth"
 	"hostek/internal/gpu"
@@ -30,6 +32,8 @@ const (
 	permThermal   = "hp_hostek_thermal"   // temperature info + the Thermal tab
 	permPowerInfo = "hp_hostek_powerinfo" // power telemetry + the Power tab
 	permDisks     = "hp_hostek_disks"     // the Disks tab (all disks)
+	permMount     = "hp_hostek_mount"     // mount/unmount partitions from the Disks tab
+	permEject     = "hp_hostek_eject"     // safely remove a whole disk — detaches it (dangerous)
 )
 
 // Server wires the verifier and collectors into HTTP handlers.
@@ -56,6 +60,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+base+"host", s.guard("", false, s.host))
 	mux.HandleFunc("GET "+base+"hardware", s.guard("", false, s.hardware))
 	mux.HandleFunc("GET "+base+"disks", s.guard(permDisks, false, s.disks))
+	mux.HandleFunc("POST "+base+"disks/eject", s.guard(permEject, true, s.ejectDisk))
+	mux.HandleFunc("POST "+base+"disks/mount", s.guard(permMount, true, s.mountPartition))
+	mux.HandleFunc("POST "+base+"disks/unmount", s.guard(permMount, true, s.unmountPartition))
 	mux.HandleFunc("GET "+base+"processes", s.guard(permProc, false, s.processes))
 	mux.HandleFunc("GET "+base+"config/power", s.guard(permPower, false, s.getPower))
 	mux.HandleFunc("POST "+base+"config/power", s.guard(permPower, true, s.setPower))
@@ -192,6 +199,83 @@ func (s *Server) disks(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"disks": ds})
+}
+
+// ejectDisk safely removes one whole disk: its filesystems are unmounted, buffers
+// flushed, and the device detached from the kernel. The system disk is refused, in
+// hardware.Eject and again in the wrapper.
+func (s *Server) ejectDisk(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	name, ok := deviceBody(w, r)
+	if !ok {
+		return
+	}
+	err := s.hw.Eject(name)
+	audit(u, "eject", name, err)
+	writeDiskOp(w, err, map[string]any{"ok": true})
+}
+
+// mountPartition mounts one partition, at its /etc/fstab target when it has one and
+// otherwise under /media/hostek/ (nosuid,nodev). Replies with the resulting mountpoint.
+func (s *Server) mountPartition(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	name, ok := deviceBody(w, r)
+	if !ok {
+		return
+	}
+	mnt, err := s.hw.Mount(name)
+	audit(u, "mount", name, err)
+	writeDiskOp(w, err, map[string]any{"ok": true, "mountpoint": mnt})
+}
+
+// unmountPartition unmounts one partition. The wrapper refuses the mounts the running
+// system depends on (/, /boot, /usr, …), so this cannot take the OS apart.
+func (s *Server) unmountPartition(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	name, ok := deviceBody(w, r)
+	if !ok {
+		return
+	}
+	err := s.hw.Unmount(name)
+	audit(u, "unmount", name, err)
+	writeDiskOp(w, err, map[string]any{"ok": true})
+}
+
+// deviceBody decodes the {"name": "sdb1"} body shared by the three disk actions,
+// answering 400 itself when it can't. The name is only ever a kernel device name;
+// hardware.go re-validates it before it goes anywhere near the wrapper.
+func deviceBody(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil || body.Name == "" {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return "", false
+	}
+	return body.Name, true
+}
+
+// writeDiskOp maps a disk action's outcome onto the HTTP contract. A failure the
+// wrapper diagnosed ("cannot unmount /srv — target is busy") is passed through
+// verbatim: it is the only part of the answer the user can actually act on.
+func writeDiskOp(w http.ResponseWriter, err error, success map[string]any) {
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, success)
+	case errors.Is(err, hardware.ErrUnknownDevice):
+		writeErr(w, http.StatusNotFound, "No such disk or partition")
+	case errors.Is(err, hardware.ErrSystemDisk):
+		writeErr(w, http.StatusBadRequest, "The system disk cannot be ejected")
+	default:
+		writeErr(w, http.StatusConflict, strings.TrimPrefix(err.Error(), hardware.ErrDiskOpFailed.Error()+": "))
+	}
+}
+
+// audit records every attempted disk action with who asked. These are rare, deliberate
+// and state-changing: a disk that unexpectedly went away should be traceable to a person.
+func audit(u *auth.User, op, name string, err error) {
+	if err != nil {
+		log.Printf("hostek: %s %q by %s failed: %v", op, name, u.Username, err)
+		return
+	}
+	log.Printf("hostek: %s %q by %s: ok", op, name, u.Username)
 }
 
 func (s *Server) processes(w http.ResponseWriter, _ *http.Request, _ *auth.User) {

@@ -151,18 +151,25 @@ type gpuDynamic struct {
 // Collector caches a static hardware probe (~10 min) and live dynamic values
 // (~2 s) behind a single RWMutex. Get() only reads caches; it never shells out.
 type Collector struct {
-	mu        sync.RWMutex
-	st        Info                         // static probe
-	dyn       dynamic                      // live values, merged into Get()
-	smart     map[string]SmartHealth       // per-disk SMART (keyed by base name), ~30s refresh
-	smartOK   map[string]time.Time         // per-disk last successful SMART probe (disk liveness)
-	ctrl      map[string]StorageController // PCI address → storage-controller identity (static topology)
-	thermCrit []ThermalMeta                // temperature-measurable components + critical limits
-	thermRing []ThermalSample              // temperature time-series (~6 min)
+	mu         sync.RWMutex
+	st         Info                         // static probe
+	dyn        dynamic                      // live values, merged into Get()
+	smart      map[string]SmartHealth       // per-disk SMART (keyed by base name), ~30s refresh
+	smartOK    map[string]time.Time         // per-disk last successful SMART probe (disk liveness)
+	smartTried map[string]bool              // per-disk "the SMART probe has run for it at least once"
+	ctrl       map[string]StorageController // PCI address → storage-controller identity (static topology)
+	thermCrit  []ThermalMeta                // temperature-measurable components + critical limits
+	thermRing  []ThermalSample              // temperature time-series (~6 min)
+
+	// smartNudge asks the SMART loop for an off-schedule probe. Disks() sends on it
+	// when it sees a disk the probe has never attempted (a fresh plug-in), so SMART
+	// arrives in a second or two rather than after up to smartInterval. Buffered
+	// depth 1: a nudge already queued is all the signal the loop needs.
+	smartNudge chan struct{}
 }
 
 // New returns an idle collector. Call Start to begin background probing.
-func New() *Collector { return &Collector{} }
+func New() *Collector { return &Collector{smartNudge: make(chan struct{}, 1)} }
 
 // Start runs an initial static probe and dynamic sample synchronously (so the
 // first Get() after Start() is populated), then launches the two refresh loops.
@@ -187,10 +194,23 @@ func (c *Collector) Start() {
 	go func() {
 		t := time.NewTicker(smartInterval)
 		defer t.Stop()
-		for range t.C {
+		for {
+			select {
+			case <-t.C:
+			case <-c.smartNudge: // a disk nobody has probed yet showed up — don't make it wait
+			}
 			c.probeSmart()
 		}
 	}()
+}
+
+// nudgeSmart asks for an off-schedule SMART probe, dropping the request when one is
+// already queued. Never blocks: it runs on the request path (Disks()).
+func (c *Collector) nudgeSmart() {
+	select {
+	case c.smartNudge <- struct{}{}:
+	default:
+	}
 }
 
 // probeSmart refreshes the SMART cache for every whole disk via the privileged
@@ -198,6 +218,12 @@ func (c *Collector) Start() {
 // hot-unplug left behind (a SATA disk lsblk still lists but that stopped answering).
 func (c *Collector) probeSmart() {
 	names := wholeDiskNames()
+	// An empty list means lsblk failed (a booted host always has at least the root
+	// disk). Keep the caches rather than wiping them — dropping them would strand
+	// every disk back in the "never probed" state and re-spin the UI for nothing.
+	if len(names) == 0 {
+		return
+	}
 	m := map[string]SmartHealth{}
 	for _, name := range names {
 		if out, ok := sudoHwinfo(cmdTimeout, "smart", "/dev/"+name); ok {
@@ -209,7 +235,12 @@ func (c *Collector) probeSmart() {
 	// Stamp "now" for disks that answered, carry the previous success time forward
 	// for present-but-silent disks, and drop disks that left lsblk entirely.
 	ok := make(map[string]time.Time, len(names))
+	// tried records that the probe *ran* for a disk, whatever it yielded. It is what
+	// separates "SMART is still coming" from "this device has no SMART to give"
+	// (USB bridges, card readers) — the former gets a spinner, the latter nothing.
+	tried := make(map[string]bool, len(names))
 	for _, name := range names {
+		tried[name] = true
 		if _, responded := m[name]; responded {
 			ok[name] = now
 		} else if prev, had := c.smartOK[name]; had {
@@ -218,6 +249,7 @@ func (c *Collector) probeSmart() {
 	}
 	c.smart = m
 	c.smartOK = ok
+	c.smartTried = tried
 	c.mu.Unlock()
 }
 

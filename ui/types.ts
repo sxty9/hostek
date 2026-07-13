@@ -292,6 +292,10 @@ export interface DiskDevice extends SmartHealth {
   type?: string;
   isSystem: boolean;
   unreachable?: boolean; // lsblk still lists it but it stopped responding (likely hot-unplugged)
+  // The kernel already lists the disk but SMART hasn't been read yet (a just-plugged
+  // drive). The card shows a spinner in the SMART slot rather than an empty gap.
+  // False once the probe has run — a device with no SMART at all never spins.
+  smartPending?: boolean;
   controller?: StorageController; // SATA only; absent for NVMe/USB
   partitions?: DiskPartition[];
 }
