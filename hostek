@@ -359,7 +359,11 @@ case "$verb" in
     # then apply that entry's options (usually 'defaults' = suid,dev,exec) and let the drive
     # bring a setuid-root binary onto the system. Force nosuid,nodev regardless — the same
     # floor the fallback path uses; a command-line -o overrides the fstab options.
-    ftgt="$(findmnt -snro TARGET -S "$dev" 2>/dev/null | head -n1)"
+    # `|| true` is load-bearing: with no fstab match `findmnt -s` exits 1, and under
+    # `set -euo pipefail` a bare command-substitution assignment would abort the whole
+    # wrapper with exit 1 — the no-fstab case is exactly the common one (mounting a plain
+    # data partition), so without this the fallback path below is never reached.
+    ftgt="$(findmnt -snro TARGET -S "$dev" 2>/dev/null | head -n1 || true)"
     if [ -n "$ftgt" ]; then
       mount -o nosuid,nodev "$dev" "$ftgt" 2>/dev/null || { echo "cannot mount $dev at $ftgt" >&2; exit 4; }
       printf '%s\n' "$ftgt"
