@@ -13,6 +13,7 @@ import {
   Text,
   formatBytes,
   formatDuration,
+  formatPercent,
   formatRate,
   useLiveQuery,
   useT,
@@ -105,7 +106,6 @@ export function Performance({ api }: ServiceContextProps) {
   const gpuPct = gpus.reduce((m, g) => Math.max(m, g.utilPercent), 0);
 
   const L = s.loads ?? { cpu: ZERO_AVG, mem: ZERO_AVG, gpu: ZERO_AVG, ssd: ZERO_AVG, net: ZERO_AVG };
-  const pct = (v: number) => `${v.toFixed(0)}%`;
 
   const samples: Sample[] = series?.samples ?? [];
   const cpuSeries = samples.map((x) => x.cpu);
@@ -153,7 +153,7 @@ export function Performance({ api }: ServiceContextProps) {
         ))}
       </Grid>
       <Divider />
-      <AvgRow avg={L.cpu} fmt={pct} />
+      <AvgRow avg={L.cpu} fmt={formatPercent} />
     </Stack>
   );
 
@@ -182,7 +182,7 @@ export function Performance({ api }: ServiceContextProps) {
         );
       })}
       <Divider />
-      <AvgRow avg={L.gpu} fmt={pct} />
+      <AvgRow avg={L.gpu} fmt={formatPercent} />
     </Stack>
   );
 
@@ -213,7 +213,7 @@ export function Performance({ api }: ServiceContextProps) {
               {formatBytes(s.memUsed)} / {formatBytes(s.memTotal)} · {formatBytes(s.memCached)} {t('hostek.cached')}
             </Text>,
             L.mem,
-            pct,
+            formatPercent,
           )}
         >
           <Stat
@@ -261,7 +261,7 @@ export function Performance({ api }: ServiceContextProps) {
               {s.sysDiskBusyPercent}% active · ↓ {formatRate(s.sysDiskReadRate)} · ↑ {formatRate(s.sysDiskWriteRate)}
             </Text>,
             L.ssd,
-            pct,
+            formatPercent,
           )}
         >
           <Stat
