@@ -18,6 +18,7 @@ import {
   formatBytes,
   useLiveQuery,
   useT,
+  userHasRight,
   type ServiceContextProps,
 } from '@holistic/ui';
 import { useState, type ReactNode } from 'react';
@@ -466,11 +467,11 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
   const overallPct = totalCapacity > 0 ? Math.min(100, (totalUsed / totalCapacity) * 100) : 0;
 
   // "Rate with AI" routes through aigentic's metered Anthropic API (admins always qualify).
-  const canRate = user.isAdmin || user.groups.includes('hp_aigentic_api');
+  const canRate = userHasRight(user, 'hp_aigentic_api');
   // Storage actions are separately granted rights; the daemon enforces them regardless —
   // this only decides whether we show a control the user is allowed to use.
-  const canMount = user.isAdmin || user.groups.includes('hp_hostek_mount');
-  const canEject = user.isAdmin || user.groups.includes('hp_hostek_eject');
+  const canMount = userHasRight(user, 'hp_hostek_mount');
+  const canEject = userHasRight(user, 'hp_hostek_eject');
 
   // The three storage actions share a shape: latch the device busy, run it, say what
   // happened, then refresh so the card shows the new kernel state at once instead of up

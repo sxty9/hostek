@@ -604,113 +604,30 @@ WantedBy=multi-user.target
 EOF
 }
 
+# Declared rights groups, parsed from the manifest (single source of truth). Prefers the
+# repo copy; falls back to the installed drop-in (e.g. during uninstall, before it is removed).
+manifest_groups() {
+  local src="$REPO_ROOT/permissions/hostek.json"
+  [ -f "$src" ] || src="$PERMS_FILE"
+  [ -f "$src" ] || return 0
+  grep -oE '"group"[[:space:]]*:[[:space:]]*"hp_[a-z0-9_-]+"' "$src" | grep -oE 'hp_[a-z0-9_-]+'
+}
+
 write_permissions() {
-  # Declare hostek's fine-grained rights to the holistic rights standard (drop-in) and
-  # create their backing Linux groups. Each right is admin-only by default (default:false):
+  # Declare hostek's fine-grained rights to the holistic rights standard by dropping the
+  # manifest where privleg discovers it, and create their backing Linux groups. The manifest
+  # permissions/hostek.json is the single source of truth; the daemon (internal/rights) and
+  # the UI right constants mirror it. Each right is admin-only by default (default:false):
   # without privleg the groups stay empty, so behaviour is exactly as before. privleg lets
   # an admin grant a specific non-admin one of these rights = add them to the group.
   # The daemon (api.go) and the UI enforce `isAdmin || group ∈ user.groups`.
+  local src="$REPO_ROOT/permissions/hostek.json"
+  [ -f "$src" ] || die "missing $src — run from the repo root" 5
   install -d -o "$HOLISTIC_GROUP" -g "$HOLISTIC_GROUP" -m 0755 /etc/holistic/permissions.d 2>/dev/null \
     || install -d -m 0755 /etc/holistic/permissions.d
-  cat > "$PERMS_FILE" <<'JSON'
-{
-  "service": "hostek",
-  "version": 1,
-  "categories": [
-    {
-      "id": "system",
-      "label": "System",
-      "description": "Energie- und Systemsteuerung.",
-      "permissions": [
-        {
-          "id": "power",
-          "label": "Power-Steuerung",
-          "description": "OS-Energieeinstellungen und den Headless-/Always-on-Modus ändern.",
-          "group": "hp_hostek_power",
-          "default": false,
-          "dangerous": true
-        }
-      ]
-    },
-    {
-      "id": "insight",
-      "label": "Einblick",
-      "description": "Erweiterte Einblicke in Prozesse und Hardware.",
-      "permissions": [
-        {
-          "id": "processes",
-          "label": "Prozessliste",
-          "description": "Laufende Prozesse und ihre CPU-/RAM-/Netz-Nutzung einsehen.",
-          "group": "hp_hostek_proc",
-          "default": false
-        },
-        {
-          "id": "powerinfo",
-          "label": "Energieinformationen",
-          "description": "Stromverbrauch (Watt) der Komponenten und den Power-Tab einsehen.",
-          "group": "hp_hostek_powerinfo",
-          "default": false
-        },
-        {
-          "id": "thermal",
-          "label": "Thermalinformationen",
-          "description": "Temperaturwerte (CPU, GPU, Datenträger) und den Thermal-Tab einsehen.",
-          "group": "hp_hostek_thermal",
-          "default": false
-        },
-        {
-          "id": "techinfo",
-          "label": "Software-Informationen",
-          "description": "Betriebsstunden, Firmware und Treiber einsehen.",
-          "group": "hp_hostek_techinfo",
-          "default": false
-        },
-        {
-          "id": "hwdetail",
-          "label": "Identitätsinformationen",
-          "description": "Sensible Identifikatoren einsehen: Seriennummern und MAC-Adressen.",
-          "group": "hp_hostek_hwdetail",
-          "default": false,
-          "sensitive": true
-        },
-        {
-          "id": "disks",
-          "label": "Datenträger",
-          "description": "Den Disks-Tab mit allen Datenträgern einsehen.",
-          "group": "hp_hostek_disks",
-          "default": false
-        }
-      ]
-    },
-    {
-      "id": "storage",
-      "label": "Speicherverwaltung",
-      "description": "Datenträger im Disks-Tab aktiv verwalten.",
-      "permissions": [
-        {
-          "id": "mount",
-          "label": "Partitionen einhängen",
-          "description": "Partitionen ein- und aushängen. Systempartitionen (/, /boot, …) bleiben gesperrt.",
-          "group": "hp_hostek_mount",
-          "default": false,
-          "dangerous": true
-        },
-        {
-          "id": "eject",
-          "label": "Datenträger auswerfen",
-          "description": "Datenträger sicher entfernen: aushängen, Puffer leeren, vom Kernel trennen. Der Systemdatenträger bleibt gesperrt.",
-          "group": "hp_hostek_eject",
-          "default": false,
-          "dangerous": true
-        }
-      ]
-    }
-  ]
-}
-JSON
-  chmod 0644 "$PERMS_FILE"
+  install -m 0644 "$src" "$PERMS_FILE"
   local g
-  for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_techinfo hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks hp_hostek_mount hp_hostek_eject; do
+  for g in $(manifest_groups); do
     groupadd -f "$g"
   done
 }
@@ -889,7 +806,7 @@ cmd_uninstall() {
     userdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     groupdel "$HOSTEK_USER" >/dev/null 2>&1 || true
     local g
-    for g in hp_hostek_power hp_hostek_proc hp_hostek_hwdetail hp_hostek_techinfo hp_hostek_thermal hp_hostek_powerinfo hp_hostek_disks hp_hostek_mount hp_hostek_eject; do
+    for g in $(manifest_groups); do
       groupdel "$g" >/dev/null 2>&1 || true
     done
     rm -rf "$HOSTEK_APP" /etc/hostek /var/lib/hostek
