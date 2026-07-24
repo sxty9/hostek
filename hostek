@@ -113,10 +113,22 @@ set -euo pipefail
 DROPIN=/etc/systemd/logind.conf.d/10-hostek-headless.conf
 SLEEP_TARGETS=(sleep.target suspend.target hibernate.target hybrid-sleep.target)
 
+# Write stdin to $1 atomically: a temp file in the same directory (so the rename is a true
+# rename(2), never a copy), given mode $2, then moved into place. A reader — systemd-logind
+# here — only ever sees the complete old file or the complete new one, never a half-written
+# intermediate. The temp's suffix isn't ".conf", so systemd ignores it during the swap.
+atomic_write() {
+  local dest="$1" mode="$2" tmp
+  tmp="$(mktemp "${dest}.XXXXXX")"
+  cat > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 case "${1:-}" in
   on)
     install -d -m 0755 /etc/systemd/logind.conf.d
-    cat > "$DROPIN" <<'EOF'
+    atomic_write "$DROPIN" 0644 <<'EOF'
 # Managed by hostek — keep a headless server running without a monitor.
 [Login]
 HandleLidSwitch=ignore
@@ -161,13 +173,26 @@ set -euo pipefail
 PROFILE=/etc/profile.d/hostek-tmux.sh
 RESUME=/etc/hostek/tmux-resume
 
+# Write stdin to $1 atomically: a temp file in the same directory (so the rename is a true
+# rename(2), never a copy), given mode $2, then moved into place. A reader — an interactive
+# login shell sourcing the snippet here — only ever sees the complete old file or the
+# complete new one, never a half-written one. The temp's suffix isn't ".sh", so /etc/profile.d
+# globbing skips it during the swap.
+atomic_write() {
+  local dest="$1" mode="$2" tmp
+  tmp="$(mktemp "${dest}.XXXXXX")"
+  cat > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 case "${1:-}" in
   on)
     # Best-effort: pull tmux in if missing. Without it the snippet is a harmless no-op.
     command -v tmux >/dev/null 2>&1 \
       || { command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq tmux >/dev/null 2>&1; } \
       || true
-    cat > "$PROFILE" <<'EOF'
+    atomic_write "$PROFILE" 0644 <<'EOF'
 # Managed by hostek — keep remote work alive across SSH disconnects. Each interactive SSH login
 # gets its OWN persistent tmux session, so concurrent logins stay independent (the non-tmux
 # luxury). If /etc/hostek/tmux-resume exists, a login instead reattaches to the most-recently-
@@ -190,7 +215,6 @@ if [ -n "${SSH_CONNECTION:-}" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/n
   esac
 fi
 EOF
-    chmod 0644 "$PROFILE"
     echo "[hostek] tmux SSH session persistence enabled"
     ;;
   off)
