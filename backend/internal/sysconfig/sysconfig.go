@@ -25,7 +25,7 @@ const (
 	tmuxResume = "/etc/hostek/tmux-resume"
 )
 
-// BiosNote is the informational firmware setting (already configured in UEFI).
+// BiosNote is the recommended firmware setting for unattended always-on operation.
 type BiosNote struct {
 	Setting string `json:"setting"`
 	Value   string `json:"value"`
@@ -49,7 +49,7 @@ func biosNote() BiosNote {
 	return BiosNote{
 		Setting: "Restore AC Power Loss",
 		Value:   "Power On",
-		Note:    "Firmware-level (UEFI), already set to power on after AC loss. Not writable from the OS on this board.",
+		Note:    "Firmware-level (UEFI) setting; not writable from the OS. Set it in the board's firmware so the server powers on automatically after a power loss.",
 	}
 }
 

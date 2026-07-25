@@ -78,7 +78,7 @@ detect_holistic_repo() {
     ( cd "$HOLISTIC_REPO" && pwd ); return 0
   fi
   local c
-  for c in "$REPO_ROOT/../holistic" /code/holistic "$HOME/holistic" /home/*/holistic; do
+  for c in "$REPO_ROOT/../holistic" "$HOME/holistic" /home/*/holistic; do
     [ -e "$c" ] && is_holistic_repo "$c" && { ( cd "$c" && pwd ); return 0; }
   done
   return 1
@@ -891,7 +891,7 @@ Usage:
   hostek help | version
 
 Quickstart:
-  sudo ./hostek setup           # HOLISTIC_REPO is autodetected (sibling ../holistic, /code/holistic, …)
+  sudo ./hostek setup           # HOLISTIC_REPO is autodetected (sibling ../holistic, ~/holistic, …)
 
 Env (override defaults):
   HOLISTIC_REPO   path to the holistic repo (autodetected if unset)
