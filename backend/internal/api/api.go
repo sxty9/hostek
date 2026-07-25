@@ -17,26 +17,16 @@ import (
 	"hostek/internal/gpu"
 	"hostek/internal/hardware"
 	"hostek/internal/metrics"
+	"hostek/internal/rights"
 	"hostek/internal/shutdown"
 	"hostek/internal/sysconfig"
 )
 
 const base = "/api/services/hostek/"
 
-// Fine-grained rights hostek declares to the holistic rights standard (see
-// permissions.d/hostek.json, written by `hostek setup`). Each is backed by the
-// matching Linux group; admins implicitly hold all of them.
-const (
-	permPower     = "hp_hostek_power"     // change OS power/headless + SSH-session config (dangerous)
-	permProc      = "hp_hostek_proc"      // see the per-process breakdown
-	permIdentity  = "hp_hostek_hwdetail"  // sensitive identity fields (serial, MAC)
-	permTechInfo  = "hp_hostek_techinfo"  // technical fields (power-on hours, firmware, driver)
-	permThermal   = "hp_hostek_thermal"   // temperature info + the Thermal tab
-	permPowerInfo = "hp_hostek_powerinfo" // power telemetry + the Power tab
-	permDisks     = "hp_hostek_disks"     // the Disks tab (all disks)
-	permMount     = "hp_hostek_mount"     // mount/unmount partitions from the Disks tab
-	permEject     = "hp_hostek_eject"     // safely remove a whole disk — detaches it (dangerous)
-)
+// Fine-grained rights hostek declares to the holistic rights standard live in the
+// internal/rights package (backed 1:1 by permissions/hostek.json). Each is backed by
+// the matching Linux group; admins implicitly hold all of them.
 
 // Server wires the verifier and collectors into HTTP handlers.
 type Server struct {
@@ -58,23 +48,23 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+base+"summary", s.guard("", false, s.summary))
 	mux.HandleFunc("GET "+base+"metrics", s.guard("", false, s.series))
-	mux.HandleFunc("GET "+base+"power", s.guard(permPowerInfo, false, s.power))
-	mux.HandleFunc("GET "+base+"thermal", s.guard(permThermal, false, s.thermal))
+	mux.HandleFunc("GET "+base+"power", s.guard(rights.GroupPowerInfo, false, s.power))
+	mux.HandleFunc("GET "+base+"thermal", s.guard(rights.GroupThermal, false, s.thermal))
 	mux.HandleFunc("GET "+base+"host", s.guard("", false, s.host))
 	mux.HandleFunc("GET "+base+"hardware", s.guard("", false, s.hardware))
-	mux.HandleFunc("GET "+base+"disks", s.guard(permDisks, false, s.disks))
-	mux.HandleFunc("POST "+base+"disks/eject", s.guard(permEject, true, s.ejectDisk))
-	mux.HandleFunc("POST "+base+"disks/mount", s.guard(permMount, true, s.mountPartition))
-	mux.HandleFunc("POST "+base+"disks/unmount", s.guard(permMount, true, s.unmountPartition))
-	mux.HandleFunc("GET "+base+"processes", s.guard(permProc, false, s.processes))
-	mux.HandleFunc("GET "+base+"config/power", s.guard(permPower, false, s.getPower))
-	mux.HandleFunc("POST "+base+"config/power", s.guard(permPower, true, s.setPower))
+	mux.HandleFunc("GET "+base+"disks", s.guard(rights.GroupDisks, false, s.disks))
+	mux.HandleFunc("POST "+base+"disks/eject", s.guard(rights.GroupEject, true, s.ejectDisk))
+	mux.HandleFunc("POST "+base+"disks/mount", s.guard(rights.GroupMount, true, s.mountPartition))
+	mux.HandleFunc("POST "+base+"disks/unmount", s.guard(rights.GroupMount, true, s.unmountPartition))
+	mux.HandleFunc("GET "+base+"processes", s.guard(rights.GroupProc, false, s.processes))
+	mux.HandleFunc("GET "+base+"config/power", s.guard(rights.GroupPower, false, s.getPower))
+	mux.HandleFunc("POST "+base+"config/power", s.guard(rights.GroupPower, true, s.setPower))
 	// Emergency shutdown („Not-Aus"). The two config routes are admin-gated (reusing the
 	// power right); the two bare shutdown routes are deliberately UNAUTHENTICATED so the
 	// holistic login page can reach them before there is a session — the configured
 	// password in the body is the sole gate (see the shutdown package).
-	mux.HandleFunc("GET "+base+"config/shutdown", s.guard(permPower, false, s.getShutdownConfig))
-	mux.HandleFunc("POST "+base+"config/shutdown", s.guard(permPower, true, s.setShutdownConfig))
+	mux.HandleFunc("GET "+base+"config/shutdown", s.guard(rights.GroupPower, false, s.getShutdownConfig))
+	mux.HandleFunc("POST "+base+"config/shutdown", s.guard(rights.GroupPower, true, s.setShutdownConfig))
 	mux.HandleFunc("GET "+base+"shutdown", s.shutdownStatus)
 	mux.HandleFunc("POST "+base+"shutdown", s.shutdownTrigger)
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
@@ -108,13 +98,13 @@ func (s *Server) summary(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	sum := s.c.Summary()
 	// Temperature and power are gated; redact the per-GPU values without the rights.
 	// Copy the GPU slice first so we never mutate the collector's cached snapshot.
-	if !u.Can(permThermal) || !u.Can(permPowerInfo) {
+	if !u.Can(rights.GroupThermal) || !u.Can(rights.GroupPowerInfo) {
 		sum.GPUs = append([]gpu.GPU(nil), sum.GPUs...)
 		for i := range sum.GPUs {
-			if !u.Can(permThermal) {
+			if !u.Can(rights.GroupThermal) {
 				sum.GPUs[i].TempC = 0
 			}
-			if !u.Can(permPowerInfo) {
+			if !u.Can(rights.GroupPowerInfo) {
 				sum.GPUs[i].PowerW = 0
 			}
 		}
@@ -146,10 +136,10 @@ func (s *Server) thermal(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 // (hwdetail). Slices are copied before redacting so the cache stays intact.
 func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	info := s.hw.Get()
-	canIdentity := u.Can(permIdentity)
-	canTech := u.Can(permTechInfo)
-	canTherm := u.Can(permThermal)
-	canPwr := u.Can(permPowerInfo)
+	canIdentity := u.Can(rights.GroupIdentity)
+	canTech := u.Can(rights.GroupTechInfo)
+	canTherm := u.Can(rights.GroupThermal)
+	canPwr := u.Can(rights.GroupPowerInfo)
 
 	if !canTherm {
 		info.CPU.TempC = 0
@@ -194,9 +184,9 @@ func (s *Server) hardware(w http.ResponseWriter, _ *http.Request, u *auth.User) 
 // firmware/power-on hours need techinfo, temperatures need thermal.
 func (s *Server) disks(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 	ds := s.hw.Disks() // freshly built each call, safe to mutate in place
-	canIdentity := u.Can(permIdentity)
-	canTech := u.Can(permTechInfo)
-	canTherm := u.Can(permThermal)
+	canIdentity := u.Can(rights.GroupIdentity)
+	canTech := u.Can(rights.GroupTechInfo)
+	canTherm := u.Can(rights.GroupThermal)
 	for i := range ds {
 		if !canIdentity {
 			ds[i].Serial = ""

@@ -46,6 +46,7 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
 backend/        Go-Daemon (hostekd)
   cmd/hostekd/      entry point
   internal/auth/    shared-JWT validation + Linux-group/admin resolution + CSRF
+  internal/rights/  the hp_hostek_* group constants (mirror of permissions/hostek.json)
   internal/metrics/ gopsutil sampling, ring buffer, per-process CPU% deltas, system-disk I/O
   internal/gpu/     NVIDIA sampling via nvidia-smi (overall + per-process)
   internal/netmon/  per-process network via the privileged hostek-netmon co-process
@@ -54,9 +55,12 @@ backend/        Go-Daemon (hostekd)
   internal/diskutil/ root block-device resolution (shared)
   internal/sysconfig/ read/apply headless power settings
   internal/api/     HTTP routes under /api/services/hostek/
+permissions/    hostek.json — the rights manifest (single source of truth for the
+                hp_hostek_* groups; installed to /etc/holistic/permissions.d/ by setup)
 ui/             @holistic/ui plugin (linked into holistic/frontend/external/hostek)
 hostek          single-file CLI: setup/build/lifecycle. Generates the systemd unit,
-                Caddy route, sudoers drop-in + privileged power wrapper inline (no deploy/ tree).
+                Caddy route, sudoers drop-in + privileged power wrapper inline (no deploy/
+                tree); installs permissions/hostek.json and creates its backing groups.
 ```
 
 ## Install

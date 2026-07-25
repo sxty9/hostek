@@ -300,15 +300,22 @@ func (c *Collector) probeStatic() {
 	// along with the 10-min probe rather than costing an lspci on every Disks() call.
 	ctrls := probeControllers()
 
+	// Temperature-measurable components + critical limits, derived from the fresh probe
+	// (plus nvidia-smi/lsblk). Computed here — before publishing, outside any lock — so the
+	// evaluation stays out of the pool write and the store below is a pure atomic swap.
+	meta := computeThermalMeta(info)
+
+	c.storeStatic(info, ctrls, meta)
+}
+
+// storeStatic publishes a completed static probe as ONE atomic write, so no reader ever
+// observes the inventory (st/ctrl) from one probe generation together with its derived
+// thermal component list (thermCrit) from another — there is no intermediate state where
+// Get() reports new hardware while Thermal() still lists the components of the old.
+func (c *Collector) storeStatic(info Info, ctrls map[string]StorageController, meta []ThermalMeta) {
 	c.mu.Lock()
 	c.st = info
 	c.ctrl = ctrls
-	c.mu.Unlock()
-
-	// Temperature-measurable components + critical limits (uses the just-published
-	// static info plus nvidia-smi/lsblk; no Collector lock needed during the probe).
-	meta := computeThermalMeta(info)
-	c.mu.Lock()
 	c.thermCrit = meta
 	c.mu.Unlock()
 }

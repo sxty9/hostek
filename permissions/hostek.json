@@ -1,0 +1,94 @@
+{
+  "service": "hostek",
+  "version": 1,
+  "categories": [
+    {
+      "id": "system",
+      "label": "System",
+      "description": "Energie- und Systemsteuerung.",
+      "permissions": [
+        {
+          "id": "power",
+          "label": "Power-Steuerung",
+          "description": "OS-Energieeinstellungen und den Headless-/Always-on-Modus ändern.",
+          "group": "hp_hostek_power",
+          "default": false,
+          "dangerous": true
+        }
+      ]
+    },
+    {
+      "id": "insight",
+      "label": "Einblick",
+      "description": "Erweiterte Einblicke in Prozesse und Hardware.",
+      "permissions": [
+        {
+          "id": "processes",
+          "label": "Prozessliste",
+          "description": "Laufende Prozesse und ihre CPU-/RAM-/Netz-Nutzung einsehen.",
+          "group": "hp_hostek_proc",
+          "default": false
+        },
+        {
+          "id": "powerinfo",
+          "label": "Energieinformationen",
+          "description": "Stromverbrauch (Watt) der Komponenten und den Power-Tab einsehen.",
+          "group": "hp_hostek_powerinfo",
+          "default": false
+        },
+        {
+          "id": "thermal",
+          "label": "Thermalinformationen",
+          "description": "Temperaturwerte (CPU, GPU, Datenträger) und den Thermal-Tab einsehen.",
+          "group": "hp_hostek_thermal",
+          "default": false
+        },
+        {
+          "id": "techinfo",
+          "label": "Software-Informationen",
+          "description": "Betriebsstunden, Firmware und Treiber einsehen.",
+          "group": "hp_hostek_techinfo",
+          "default": false
+        },
+        {
+          "id": "hwdetail",
+          "label": "Identitätsinformationen",
+          "description": "Sensible Identifikatoren einsehen: Seriennummern und MAC-Adressen.",
+          "group": "hp_hostek_hwdetail",
+          "default": false,
+          "sensitive": true
+        },
+        {
+          "id": "disks",
+          "label": "Datenträger",
+          "description": "Den Disks-Tab mit allen Datenträgern einsehen.",
+          "group": "hp_hostek_disks",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "storage",
+      "label": "Speicherverwaltung",
+      "description": "Datenträger im Disks-Tab aktiv verwalten.",
+      "permissions": [
+        {
+          "id": "mount",
+          "label": "Partitionen einhängen",
+          "description": "Partitionen ein- und aushängen. Systempartitionen (/, /boot, …) bleiben gesperrt.",
+          "group": "hp_hostek_mount",
+          "default": false,
+          "dangerous": true
+        },
+        {
+          "id": "eject",
+          "label": "Datenträger auswerfen",
+          "description": "Datenträger sicher entfernen: aushängen, Puffer leeren, vom Kernel trennen. Der Systemdatenträger bleibt gesperrt.",
+          "group": "hp_hostek_eject",
+          "default": false,
+          "dangerous": true
+        }
+      ]
+    }
+  ]
+}
