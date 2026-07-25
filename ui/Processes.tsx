@@ -228,6 +228,59 @@ function ColumnHover({ label, history, get }: { label: string; history: Process[
   );
 }
 
+// PerGpuBreakdown lists, per physical GPU, the VRAM currently attributed to processes and how
+// many hold memory on it — the multi-GPU split behind the aggregated "GPU memory" column. Fed
+// the latest history frame so it refreshes with the live table.
+function PerGpuBreakdown({ frame }: { frame: Process[] }) {
+  const t = useT();
+  const per = new Map<number, { mem: number; procs: number }>();
+  for (const p of frame)
+    for (const d of p.gpuDevices ?? []) {
+      const e = per.get(d.index) ?? { mem: 0, procs: 0 };
+      e.mem += d.mem ?? 0;
+      if ((d.mem ?? 0) > 0) e.procs += 1;
+      per.set(d.index, e);
+    }
+  const gpus = [...per.entries()].sort((a, b) => a[0] - b[0]);
+  if (gpus.length === 0) return null;
+  return (
+    <Stack gap={1}>
+      <Text variant="caption" weight="semibold">
+        {t('hostek.perGpuVram')}
+      </Text>
+      {gpus.map(([idx, e]) => (
+        <Stack key={idx} direction="row" justify="between" gap={3}>
+          <Text variant="caption" color="secondary">
+            GPU {idx}
+          </Text>
+          <Text variant="caption" className="tabular-nums">
+            {formatBytes(e.mem)} · {t('hostek.procCountShort', { count: e.procs })}
+          </Text>
+        </Stack>
+      ))}
+    </Stack>
+  );
+}
+
+// GpuMemColumnHover is the GPU-memory column header: the per-GPU VRAM breakdown on top, then
+// the usual top-processes stream (by total VRAM across GPUs).
+function GpuMemColumnHover({ label, history }: { label: string; history: Process[][] }) {
+  const stateRef = useRef<StreamState>({ shown: new Set(), outAt: new Map(), colorByPid: new Map(), names: new Map() });
+  return (
+    <HoverPanel
+      width={360}
+      panel={() => (
+        <Stack gap={3}>
+          <PerGpuBreakdown frame={history[history.length - 1] ?? []} />
+          <StreamPanel label={label} history={history} get={(p) => p.gpuMem ?? 0} st={stateRef.current} />
+        </Stack>
+      )}
+    >
+      {label}
+    </HoverPanel>
+  );
+}
+
 export function Processes({ api }: ServiceContextProps) {
   const t = useT();
   const { data } = useLiveQuery<ProcessesResponse>(() => api.get<ProcessesResponse>('processes'), 2000);
@@ -288,6 +341,16 @@ export function Processes({ api }: ServiceContextProps) {
       width: 80,
     },
     {
+      key: 'gpuMem',
+      header: <GpuMemColumnHover label={t('hostek.gpuMemory')} history={history} />,
+      toggleLabel: t('hostek.gpuMemory'),
+      align: 'right',
+      sortable: true,
+      sortValue: (p) => p.gpuMem ?? 0,
+      render: (p) => (p.gpuMem ? formatBytes(p.gpuMem) : '—'),
+      width: 104,
+    },
+    {
       key: 'gpuEngine',
       header: t('hostek.colGpuEngine'),
       sortable: true,
@@ -307,6 +370,23 @@ export function Processes({ api }: ServiceContextProps) {
         p.netRxRate + p.netTxRate > 0 ? (
           <Text variant="footnote" className="tabular-nums">
             ↓ {formatRate(p.netRxRate)} · ↑ {formatRate(p.netTxRate)}
+          </Text>
+        ) : (
+          '—'
+        ),
+      width: 168,
+    },
+    {
+      key: 'disk',
+      header: <ColumnHover label={t('hostek.disk')} history={history} get={(p) => (p.diskReadRate ?? 0) + (p.diskWriteRate ?? 0)} />,
+      toggleLabel: t('hostek.disk'),
+      align: 'right',
+      sortable: true,
+      sortValue: (p) => (p.diskReadRate ?? 0) + (p.diskWriteRate ?? 0),
+      render: (p) =>
+        (p.diskReadRate ?? 0) + (p.diskWriteRate ?? 0) > 0 ? (
+          <Text variant="footnote" className="tabular-nums">
+            ↓ {formatRate(p.diskReadRate ?? 0)} · ↑ {formatRate(p.diskWriteRate ?? 0)}
           </Text>
         ) : (
           '—'

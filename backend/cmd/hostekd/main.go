@@ -17,11 +17,13 @@ import (
 
 	"hostek/internal/api"
 	"hostek/internal/auth"
+	"hostek/internal/diskmon"
 	"hostek/internal/gpu"
 	"hostek/internal/hardware"
 	"hostek/internal/metrics"
 	"hostek/internal/netmon"
 	"hostek/internal/powermon"
+	"hostek/internal/shutdown"
 )
 
 func main() {
@@ -35,22 +37,27 @@ func main() {
 	}
 	v := auth.NewVerifier(secret, os.Getenv("HOSTEK_ADMIN_GROUP"))
 
-	// External samplers (NVIDIA GPU, per-process network) and the hardware inventory run
-	// independently; each no-ops cleanly when its tooling/privileges are unavailable.
+	// External samplers (NVIDIA GPU, per-process network, per-process disk I/O) and the
+	// hardware inventory run independently; each no-ops cleanly when its tooling/privileges
+	// are unavailable.
 	gpuS := gpu.New(*interval)
 	gpuS.Start()
 	netS := netmon.New()
 	netS.Start()
 	pwrS := powermon.New()
 	pwrS.Start()
+	diskS := diskmon.New()
+	diskS.Start()
 	hw := hardware.New()
 	hw.Start()
 
-	col := metrics.New(*interval, gpuS, netS, pwrS)
+	col := metrics.New(*interval, gpuS, netS, pwrS, diskS)
 	col.Start()
 
+	shut := shutdown.New()
+
 	srv := &http.Server{
-		Handler:           api.New(v, col, hw).Handler(),
+		Handler:           api.New(v, col, hw, shut).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

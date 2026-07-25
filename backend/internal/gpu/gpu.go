@@ -27,11 +27,20 @@ type GPU struct {
 	PowerW      float64 `json:"powerW"`
 }
 
-// ProcGPU is one process's GPU usage, joined into the process list by PID.
+// ProcGPUDev is one process's usage on a single physical GPU.
+type ProcGPUDev struct {
+	Index int     `json:"index"`
+	Util  float64 `json:"util,omitempty"` // SM utilization % (compute only; graphics reports none)
+	Mem   uint64  `json:"mem,omitempty"`  // framebuffer bytes on this GPU
+}
+
+// ProcGPU is one process's GPU usage, aggregated across every GPU it touches (joined into the
+// process list by PID). PerGPU keeps the per-device split for the per-GPU breakdown UI.
 type ProcGPU struct {
-	Util   float64 // SM utilization %
-	Mem    uint64  // bytes (framebuffer)
-	Engine string  // dominant engine label, e.g. "GPU0·SM"
+	Util   float64      // summed SM % across GPUs
+	Mem    uint64       // summed framebuffer bytes across GPUs
+	Engine string       // which GPUs, e.g. "GPU0·GPU1"
+	PerGPU []ProcGPUDev // per-device detail
 }
 
 // Snapshot is the latest sampled GPU state.
@@ -131,53 +140,93 @@ func queryGPUs() []GPU {
 	return gpus
 }
 
-// queryProcs joins nvidia-smi pmon (SM/engine utilization) with the compute-apps
-// query (per-process framebuffer bytes). Both are best-effort; either may be empty.
+// queryProcs reads nvidia-smi pmon for per-process, per-GPU SM utilization (sm) and
+// framebuffer memory (fb). pmon lists BOTH graphics and compute processes on every GPU, so
+// unlike --query-compute-apps (compute only) it also captures a desktop's graphics apps —
+// which report no sm% but do hold VRAM. Column order varies by driver version, so we map the
+// header's names → field positions instead of hardcoding indices. Best-effort: an absent or
+// unsupported pmon simply yields no GPU rows.
 func queryProcs() map[int32]ProcGPU {
 	res := map[int32]ProcGPU{}
-
-	if out, ok := run(3*time.Second, "nvidia-smi", "pmon", "-c", "1", "-s", "u"); ok {
-		sc := bufio.NewScanner(strings.NewReader(out))
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			f := strings.Fields(line)
-			// "-s u" layout: gpu pid type sm enc dec command. f[3] (sm) is the GPU%; the
-			// engine column layout varies by nvidia-smi version, so we label by GPU index.
-			if len(f) < 4 {
-				continue
-			}
-			pid, err := strconv.ParseInt(f[1], 10, 32)
-			if err != nil {
-				continue
-			}
-			res[int32(pid)] = ProcGPU{Util: round1(dash(f[3])), Engine: "GPU" + f[0]}
-		}
+	out, ok := run(3*time.Second, "nvidia-smi", "pmon", "-c", "1", "-s", "um")
+	if !ok {
+		return res
 	}
-
-	if out, ok := run(3*time.Second, "nvidia-smi",
-		"--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"); ok {
-		sc := bufio.NewScanner(strings.NewReader(out))
-		for sc.Scan() {
-			f := splitCSV(sc.Text())
-			if len(f) < 2 {
-				continue
-			}
-			pid, err := strconv.ParseInt(f[0], 10, 32)
-			if err != nil {
-				continue
-			}
-			pg := res[int32(pid)]
-			pg.Mem = mib(f[1])
-			if pg.Engine == "" {
-				pg.Engine = "GPU·Compute"
-			}
-			res[int32(pid)] = pg
+	var cols map[string]int // header column name → field index (nil until the header is parsed)
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
 		}
+		if strings.HasPrefix(line, "#") {
+			// pmon prints two '#' header lines: the first names the columns
+			// ("# gpu pid type sm mem enc dec ... fb ... command"), the second the units.
+			// Only the column-name row (it carries both "gpu" and "pid") defines positions.
+			if cols == nil {
+				m := map[string]int{}
+				for i, name := range strings.Fields(strings.TrimPrefix(line, "#")) {
+					m[name] = i
+				}
+				if _, hasGPU := m["gpu"]; hasGPU {
+					if _, hasPID := m["pid"]; hasPID {
+						cols = m
+					}
+				}
+			}
+			continue
+		}
+		if cols == nil {
+			continue
+		}
+		f := strings.Fields(line)
+		col := func(name string) (string, bool) {
+			if i, ok := cols[name]; ok && i < len(f) {
+				return f[i], true
+			}
+			return "", false
+		}
+		pidStr, ok := col("pid")
+		if !ok {
+			continue
+		}
+		pid, err := strconv.ParseInt(pidStr, 10, 32)
+		if err != nil {
+			continue
+		}
+		gpuStr, _ := col("gpu")
+		var sm float64
+		if v, ok := col("sm"); ok {
+			sm = round1(dash(v))
+		}
+		var fbBytes uint64
+		if v, ok := col("fb"); ok {
+			if mb := dash(v); mb > 0 { // fb is reported in MiB
+				fbBytes = uint64(mb) * 1024 * 1024
+			}
+		}
+		pg := res[int32(pid)]
+		pg.Util = round1(pg.Util + sm)
+		pg.Mem += fbBytes
+		pg.Engine = addEngine(pg.Engine, "GPU"+gpuStr)
+		pg.PerGPU = append(pg.PerGPU, ProcGPUDev{Index: atoi(gpuStr), Util: sm, Mem: fbBytes})
+		res[int32(pid)] = pg
 	}
 	return res
+}
+
+// addEngine appends label to a "·"-joined engine list, skipping duplicates so a process
+// spanning GPU0 and GPU1 reads "GPU0·GPU1" (each GPU once).
+func addEngine(existing, label string) string {
+	if existing == "" {
+		return label
+	}
+	for _, e := range strings.Split(existing, "·") {
+		if e == label {
+			return existing
+		}
+	}
+	return existing + "·" + label
 }
 
 func splitCSV(line string) []string {

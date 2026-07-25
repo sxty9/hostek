@@ -3,6 +3,7 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   DiskIcon,
   Donut,
   EmptyState,
@@ -109,6 +110,48 @@ const byCategoryThenPort = (a: DiskDevice, b: DiskDevice): number =>
   portNum(a) - portNum(b) ||
   a.name.localeCompare(b.name);
 
+// ── Filters ────────────────────────────────────────────────────────────────────────
+type DiskKind = 'ssd' | 'hdd';
+type DiskCategory = 'smart' | 'thermal' | 'connection' | 'partitions';
+const ALL_CATEGORIES: DiskCategory[] = ['smart', 'thermal', 'connection', 'partitions'];
+const CATEGORY_LABEL: Record<DiskCategory, string> = {
+  smart: 'hostek.catSmart',
+  thermal: 'hostek.catThermal',
+  connection: 'hostek.catConnection',
+  partitions: 'hostek.catPartitions',
+};
+
+// Type filter is a spinning-platter split: rotational → HDD, everything else (SATA/NVMe/USB
+// flash) → SSD — exactly the SSD/HDD the user filters by.
+const diskKind = (d: DiskDevice): DiskKind => (d.rotational ? 'hdd' : 'ssd');
+
+// A disk's controller identity for the controller filter. SATA disks carry a real controller;
+// NVMe/USB have none, so they bucket by transport to stay filterable.
+const controllerKey = (d: DiskDevice): string =>
+  d.controller?.name || d.controller?.pci || (d.transport ? d.transport.toUpperCase() : '—');
+
+// Toggle a value's membership in a filter set (returns a fresh set for React state).
+function flip<T>(s: Set<T>, key: T): Set<T> {
+  const n = new Set(s);
+  if (n.has(key)) n.delete(key);
+  else n.add(key);
+  return n;
+}
+
+// One labelled row of filter checkboxes in the filter bar.
+function FilterRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Stack direction="row" align="start" gap={3} wrap>
+      <Text variant="caption" color="secondary" className="w-28 shrink-0 pt-1">
+        {label}
+      </Text>
+      <Stack direction="row" gap={4} wrap className="grow">
+        {children}
+      </Stack>
+    </Stack>
+  );
+}
+
 // One label/value row in the SMART block; a string value is rendered as tabular text,
 // anything else (e.g. a Badge) is rendered as-is.
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
@@ -152,8 +195,17 @@ function SmartPendingBlock() {
   );
 }
 
+// Which detail sections a card renders — toggled by the Disks-tab "display" filters.
+interface DiskView {
+  smart: boolean; // health, lifespan/age, power-on hours & cycles, firmware, raw SMART counters
+  thermal: boolean; // temperature row
+  connection: boolean; // port + controller
+  partitions: boolean; // partition list + mount/unmount actions
+}
+
 interface DiskCardProps {
   d: DiskDevice;
+  view: DiskView;
   canMount: boolean;
   canEject: boolean;
   busy: string | null; // device name of the action in flight, if any
@@ -162,7 +214,7 @@ interface DiskCardProps {
   onEject: (d: DiskDevice) => void;
 }
 
-function DiskCard({ d, canMount, canEject, busy, onMount, onUnmount, onEject }: DiskCardProps) {
+function DiskCard({ d, view, canMount, canEject, busy, onMount, onUnmount, onEject }: DiskCardProps) {
   const t = useT();
   const partitions = d.partitions ?? [];
   const mounts = partitions.filter((p) => p.mount);
@@ -288,7 +340,7 @@ function DiskCard({ d, canMount, canEject, busy, onMount, onUnmount, onEject }: 
 
         {/* Connection — which port the disk hangs off, plus the controller that owns
             that port (a chipset port 3 and an add-in card's port 3 are different sockets). */}
-        {(connection || d.controller) && (
+        {view.connection && (connection || d.controller) && (
           <Stack gap={1} className="border-t border-separator pt-2">
             {connection && <InfoRow label={t('hostek.connection')}>{connection}</InfoRow>}
             {d.controller && (
@@ -307,11 +359,13 @@ function DiskCard({ d, canMount, canEject, busy, onMount, onUnmount, onEject }: 
         {/* SMART / health (symmetric with the System-tab disk card). A drive whose SMART
             is still being read shows a spinner here instead; data always wins over the
             spinner, so a disk with values can never appear to be still loading. */}
-        {!hasSmart && d.smartPending && <SmartPendingBlock />}
-        {hasSmart && (
+        {view.smart && !hasSmart && d.smartPending && <SmartPendingBlock />}
+        {/* SMART/health (view.smart) and Temperature (view.thermal) share the block; either
+            toggle alone still renders its own rows. */}
+        {((view.smart && hasSmart) || (view.thermal && !!d.tempC)) && (
           <Stack gap={2} className="border-t border-separator pt-2">
             {/* Derived verdict + optional reason */}
-            {(d.healthStatus || d.health) && (
+            {view.smart && (d.healthStatus || d.health) && (
               <Stack gap={0.5}>
                 <InfoRow label={t('hostek.health')}>
                   {d.healthStatus ? (
@@ -329,34 +383,35 @@ function DiskCard({ d, canMount, canEject, busy, onMount, onUnmount, onEject }: 
             )}
 
             {/* Lebensdauer % (SSD/NVMe) or Betriebszeit-Alter (HDD) */}
-            {typeof d.lifePercent === 'number' ? (
-              <Stack gap={1}>
-                <InfoRow label={t('hostek.lifespan')}>
-                  <Text variant="footnote" weight="medium" className="tabular-nums">
-                    {d.lifePercent} %
-                  </Text>
-                </InfoRow>
-                <ProgressBar value={d.lifePercent} tone={lifeTone(d.lifePercent)} />
-              </Stack>
-            ) : typeof d.agePercent === 'number' ? (
-              <Stack gap={1}>
-                <InfoRow label={t('hostek.uptimeAge')}>
-                  <Text variant="footnote" weight="medium" className="tabular-nums">
-                    {d.agePercent} %
-                  </Text>
-                </InfoRow>
-                <ProgressBar value={d.agePercent} tone="accent" />
-              </Stack>
-            ) : null}
+            {view.smart &&
+              (typeof d.lifePercent === 'number' ? (
+                <Stack gap={1}>
+                  <InfoRow label={t('hostek.lifespan')}>
+                    <Text variant="footnote" weight="medium" className="tabular-nums">
+                      {d.lifePercent} %
+                    </Text>
+                  </InfoRow>
+                  <ProgressBar value={d.lifePercent} tone={lifeTone(d.lifePercent)} />
+                </Stack>
+              ) : typeof d.agePercent === 'number' ? (
+                <Stack gap={1}>
+                  <InfoRow label={t('hostek.uptimeAge')}>
+                    <Text variant="footnote" weight="medium" className="tabular-nums">
+                      {d.agePercent} %
+                    </Text>
+                  </InfoRow>
+                  <ProgressBar value={d.agePercent} tone="accent" />
+                </Stack>
+              ) : null)}
 
             {/* Vitals */}
-            {d.tempC ? <InfoRow label={t('hostek.temperature')}>{`${Math.round(d.tempC)} °C`}</InfoRow> : null}
-            {d.powerOnHours ? <InfoRow label={t('hostek.powerOnHours')}>{d.powerOnHours.toLocaleString()}</InfoRow> : null}
-            {d.powerCycles ? <InfoRow label={t('hostek.powerCycles')}>{d.powerCycles.toLocaleString()}</InfoRow> : null}
-            {d.firmware ? <InfoRow label={t('hostek.firmware')}>{d.firmware}</InfoRow> : null}
+            {view.thermal && d.tempC ? <InfoRow label={t('hostek.temperature')}>{`${Math.round(d.tempC)} °C`}</InfoRow> : null}
+            {view.smart && d.powerOnHours ? <InfoRow label={t('hostek.powerOnHours')}>{d.powerOnHours.toLocaleString()}</InfoRow> : null}
+            {view.smart && d.powerCycles ? <InfoRow label={t('hostek.powerCycles')}>{d.powerCycles.toLocaleString()}</InfoRow> : null}
+            {view.smart && d.firmware ? <InfoRow label={t('hostek.firmware')}>{d.firmware}</InfoRow> : null}
 
             {/* Raw SMART drill-down — present only for viewers with the techinfo right */}
-            {smartRows.length > 0 && (
+            {view.smart && smartRows.length > 0 && (
               <Stack gap={1} className="border-t border-separator/60 pt-2">
                 <Text variant="caption" color="tertiary">
                   {t('hostek.smartDetails')}
@@ -373,7 +428,7 @@ function DiskCard({ d, canMount, canEject, busy, onMount, onUnmount, onEject }: 
 
         {/* Partitions — every one, not just the mounted ones: an unmounted partition is
             precisely what you came here to mount, so hiding it would hide the action. */}
-        {partitions.length > 0 && (
+        {view.partitions && partitions.length > 0 && (
           <Stack gap={2} className="border-t border-separator pt-2">
             {partitions.map((p) => (
               <Stack key={p.name} direction="row" justify="between" gap={3} align="center">
@@ -440,6 +495,11 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
   // The device name of the storage action in flight — one at a time, so a card can show
   // which control is working without a second click landing on top of it.
   const [busy, setBusy] = useState<string | null>(null);
+  // Filters are stored as the set of *hidden* values (checked = visible), so a newly-appearing
+  // disk/controller/category defaults to shown without re-seeding state from async data.
+  const [hiddenKinds, setHiddenKinds] = useState<Set<DiskKind>>(new Set());
+  const [hiddenControllers, setHiddenControllers] = useState<Set<string>>(new Set());
+  const [hiddenCats, setHiddenCats] = useState<Set<DiskCategory>>(new Set());
 
   if (!data) {
     return (
@@ -456,10 +516,21 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
     return <EmptyState icon={<DiskIcon />} title={t('hostek.noDisks')} description={t('hostek.noDisksDesc')} />;
   }
 
-  // Aggregate used / total across every physical drive. Capacity is the raw device
-  // size; "used" is filesystem-level (mounted partitions), matching each card's figures.
-  const totalCapacity = disks.reduce((s, d) => s + (d.sizeBytes || 0), 0);
-  const totalUsed = disks.reduce(
+  // Instance filters (type + controller) select which drives show; the display filters (view)
+  // gate which detail sections each card renders.
+  const controllers = [...new Set(disks.map(controllerKey))].sort();
+  const shown = disks.filter((d) => !hiddenKinds.has(diskKind(d)) && !hiddenControllers.has(controllerKey(d)));
+  const view: DiskView = {
+    smart: !hiddenCats.has('smart'),
+    thermal: !hiddenCats.has('thermal'),
+    connection: !hiddenCats.has('connection'),
+    partitions: !hiddenCats.has('partitions'),
+  };
+
+  // Aggregate used / total across the shown drives. Capacity is the raw device size; "used"
+  // is filesystem-level (mounted partitions), matching each card's figures.
+  const totalCapacity = shown.reduce((s, d) => s + (d.sizeBytes || 0), 0);
+  const totalUsed = shown.reduce(
     (s, d) => s + (d.partitions ?? []).filter((p) => p.mount).reduce((a, p) => a + (p.used ?? 0), 0),
     0,
   );
@@ -566,7 +637,9 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
     <Stack gap={3}>
       <Stack direction="row" justify="between" align="center" gap={3}>
         <Text variant="subhead" weight="semibold">
-          {t('hostek.diskCount', { count: disks.length })}
+          {shown.length === disks.length
+            ? t('hostek.diskCount', { count: disks.length })
+            : t('hostek.diskCountFiltered', { shown: shown.length, total: disks.length })}
         </Text>
         {canRate && (
           <Button variant="primary" size="sm" loading={aiBusy} onClick={rateWithAI}>
@@ -574,6 +647,30 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
           </Button>
         )}
       </Stack>
+
+      {/* Filters — which drives show (type / controller) and which detail sections each
+          card renders (display). Checked = visible. */}
+      <Panel className="p-3">
+        <Stack gap={2}>
+          <FilterRow label={t('hostek.filterType')}>
+            {(['ssd', 'hdd'] as DiskKind[]).map((k) => (
+              <Checkbox key={k} checked={!hiddenKinds.has(k)} onChange={() => setHiddenKinds((s) => flip(s, k))} label={k === 'ssd' ? 'SSD' : 'HDD'} />
+            ))}
+          </FilterRow>
+          {controllers.length > 1 && (
+            <FilterRow label={t('hostek.filterController')}>
+              {controllers.map((c) => (
+                <Checkbox key={c} checked={!hiddenControllers.has(c)} onChange={() => setHiddenControllers((s) => flip(s, c))} label={c} />
+              ))}
+            </FilterRow>
+          )}
+          <FilterRow label={t('hostek.filterDisplay')}>
+            {ALL_CATEGORIES.map((c) => (
+              <Checkbox key={c} checked={!hiddenCats.has(c)} onChange={() => setHiddenCats((s) => flip(s, c))} label={t(CATEGORY_LABEL[c])} />
+            ))}
+          </FilterRow>
+        </Stack>
+      </Panel>
 
       {/* AI health assessment (on demand) */}
       {aiResult && (
@@ -615,20 +712,25 @@ export function Disks({ api, apiFor, user, ui, nav }: ServiceContextProps) {
         </Stack>
       </Panel>
 
-      <Grid minItemWidth={360} gap={3}>
-        {disks.map((d) => (
-          <DiskCard
-            key={d.name}
-            d={d}
-            canMount={canMount}
-            canEject={canEject}
-            busy={busy}
-            onMount={mountPartition}
-            onUnmount={unmountPartition}
-            onEject={ejectDisk}
-          />
-        ))}
-      </Grid>
+      {shown.length === 0 ? (
+        <EmptyState icon={<DiskIcon />} title={t('hostek.noDisksMatch')} description={t('hostek.noDisksMatchDesc')} />
+      ) : (
+        <Grid minItemWidth={360} gap={3}>
+          {shown.map((d) => (
+            <DiskCard
+              key={d.name}
+              d={d}
+              view={view}
+              canMount={canMount}
+              canEject={canEject}
+              busy={busy}
+              onMount={mountPartition}
+              onUnmount={unmountPartition}
+              onEject={ejectDisk}
+            />
+          ))}
+        </Grid>
+      )}
     </Stack>
   );
 }

@@ -80,11 +80,29 @@ export function Power({ api }: ServiceContextProps) {
   const gpuSeries = samples.map((x) => x.gpu);
   const hasCpu = data.cpuAvailable || cpuSeries.some((v) => v > 0);
   const hasGpu = data.gpuAvailable || gpuSeries.some((v) => v > 0);
+  // Authoritative per-GPU count: the backend's current count (avg.gpus) when present, else
+  // the widest per-GPU sample in the window. Series AND legend derive from this single
+  // value so their band count, colours and labels always agree.
+  const nGpu = data.avg.gpus?.length ?? Math.max(0, ...samples.map((x) => x.gpus?.length ?? 0));
 
-  // Stack CPU + GPU; their combined height is the total power.
+  // Per-GPU colour: spread --gpu opacity evenly across the GPUs so every stacked band stays
+  // distinguishable (1 GPU → full strength; N GPUs → 1.00 … 0.40, even for 3+).
+  const gpuColor = (i: number) => `rgb(var(--gpu) / ${(1 - (nGpu > 1 ? i / (nGpu - 1) : 0) * 0.6).toFixed(2)})`;
+  // A single GPU stays the bare "GPU"; only disambiguate by index for 2+.
+  const gpuLabel = (i: number) => (nGpu > 1 ? `GPU ${i}` : 'GPU');
+
+  // Stack CPU + one series PER GPU; their combined height is the total power.
   const series: StreamSeries[] = [];
   if (hasCpu) series.push({ label: 'CPU', color: C.cpu, data: cpuSeries });
-  if (hasGpu) series.push({ label: 'GPU', color: C.gpu, data: gpuSeries });
+  if (hasGpu) {
+    if (nGpu >= 1) {
+      for (let i = 0; i < nGpu; i++) {
+        series.push({ label: gpuLabel(i), color: gpuColor(i), data: samples.map((x) => x.gpus?.[i] ?? 0) });
+      }
+    } else {
+      series.push({ label: 'GPU', color: C.gpu, data: gpuSeries });
+    }
+  }
 
   const currentTotal = samples.length ? samples[samples.length - 1].total : 0;
 
@@ -112,7 +130,12 @@ export function Power({ api }: ServiceContextProps) {
 
           <Stack direction="row" gap={5} wrap>
             <PwrLegend label="CPU" color={C.cpu} avg={data.avg.cpu} />
-            <PwrLegend label="GPU" color={C.gpu} avg={data.avg.gpu} />
+            {hasGpu &&
+              (nGpu >= 1
+                ? Array.from({ length: nGpu }, (_, i) => (
+                    <PwrLegend key={i} label={gpuLabel(i)} color={gpuColor(i)} avg={data.avg.gpus?.[i] ?? data.avg.gpu} />
+                  ))
+                : <PwrLegend label="GPU" color={C.gpu} avg={data.avg.gpu} />)}
             <PwrLegend label={t('hostek.total')} color={C.total} avg={data.avg.total} />
           </Stack>
 

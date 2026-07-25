@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"hostek/internal/diskmon"
 	"hostek/internal/diskutil"
 	"hostek/internal/gpu"
 	"hostek/internal/netmon"
@@ -85,10 +86,12 @@ type Loads struct {
 
 // PowerSample is one point of the per-component power time-series (watts).
 type PowerSample struct {
-	Time  int64   `json:"time"`
-	CPU   float64 `json:"cpu"`
-	GPU   float64 `json:"gpu"`
-	Total float64 `json:"total"`
+	Time int64   `json:"time"`
+	CPU  float64 `json:"cpu"`
+	GPU  float64 `json:"gpu"` // sum of GPU watts
+	// GPUs is watts per GPU, index-aligned to Summary.GPUs (nvidia-smi index order).
+	GPUs  []float64 `json:"gpus,omitempty"`
+	Total float64   `json:"total"`
 }
 
 // PowerResponse is the Power tab payload: the recent series plus 1/5/15-min averages
@@ -102,9 +105,11 @@ type PowerResponse struct {
 
 // PowerAvg holds the 1/5/15-min EWMA power for each component (watts).
 type PowerAvg struct {
-	CPU   Avg `json:"cpu"`
-	GPU   Avg `json:"gpu"`
-	Total Avg `json:"total"`
+	CPU Avg `json:"cpu"`
+	GPU Avg `json:"gpu"`
+	// GPUs is per-GPU EWMA watts, index-aligned to Summary.GPUs (nvidia-smi index order).
+	GPUs  []Avg `json:"gpus,omitempty"`
+	Total Avg   `json:"total"`
 }
 
 // ewma3 maintains a value's exponentially-weighted moving average over 1/5/15 min,
@@ -131,15 +136,17 @@ func (e *ewma3) avg() Avg { return Avg{A1: round(e.a1), A5: round(e.a5), A15: ro
 // feed the combined utilization chart; the byte-rate fields feed the per-component
 // detail graphs (network Rx/Tx, system-disk read/write).
 type Sample struct {
-	Time     int64   `json:"time"`
-	CPU      float64 `json:"cpu"`      // %
-	Mem      float64 `json:"mem"`      // %
-	GPU      float64 `json:"gpu"`      // % (max across GPUs)
-	SSDBusy  float64 `json:"ssdBusy"`  // system-disk active-time %
-	SSDRead  float64 `json:"ssdRead"`  // bytes/sec
-	SSDWrite float64 `json:"ssdWrite"` // bytes/sec
-	NetRx    float64 `json:"netRx"`    // bytes/sec
-	NetTx    float64 `json:"netTx"`    // bytes/sec
+	Time int64   `json:"time"`
+	CPU  float64 `json:"cpu"` // %
+	Mem  float64 `json:"mem"` // %
+	GPU  float64 `json:"gpu"` // % (max across GPUs)
+	// GPUs is % per GPU, index-aligned to Summary.GPUs (nvidia-smi index order).
+	GPUs     []float64 `json:"gpus,omitempty"`
+	SSDBusy  float64   `json:"ssdBusy"`  // system-disk active-time %
+	SSDRead  float64   `json:"ssdRead"`  // bytes/sec
+	SSDWrite float64   `json:"ssdWrite"` // bytes/sec
+	NetRx    float64   `json:"netRx"`    // bytes/sec
+	NetTx    float64   `json:"netTx"`    // bytes/sec
 }
 
 // Process is one row of the per-process breakdown (admin-only).
@@ -150,14 +157,20 @@ type Process struct {
 	CPUPercent float64 `json:"cpuPercent"`
 	MemRSS     uint64  `json:"memRss"`
 	MemPercent float64 `json:"memPercent"`
-	// GPU — best-effort via nvidia-smi pmon; zero/empty when the process uses no GPU.
-	GPUPercent float64 `json:"gpuPercent"`
-	GPUEngine  string  `json:"gpuEngine,omitempty"`
-	GPUMem     uint64  `json:"gpuMem,omitempty"`
+	// GPU — best-effort via nvidia-smi pmon; zero/empty when the process uses no GPU. GPUMem
+	// is total VRAM across GPUs; GPUDevices is the per-GPU split (index/util/mem) for N GPUs.
+	GPUPercent float64          `json:"gpuPercent"`
+	GPUEngine  string           `json:"gpuEngine,omitempty"`
+	GPUMem     uint64           `json:"gpuMem,omitempty"`
+	GPUDevices []gpu.ProcGPUDev `json:"gpuDevices,omitempty"`
 	// Network — best-effort via the privileged netmon co-process; zero when unavailable.
 	NetRxRate float64 `json:"netRxRate"`
 	NetTxRate float64 `json:"netTxRate"`
-	Status    string  `json:"status"`
+	// Disk — best-effort per-process block I/O via the privileged diskmon co-process; zero
+	// when unavailable (bytes/sec).
+	DiskReadRate  float64 `json:"diskReadRate,omitempty"`
+	DiskWriteRate float64 `json:"diskWriteRate,omitempty"`
+	Status        string  `json:"status"`
 }
 
 // HostInfo is static (read once at startup).
@@ -190,6 +203,7 @@ type Collector struct {
 	gpu   *gpu.Sampler
 	net   *netmon.Sampler
 	power *powermon.Sampler
+	disk  *diskmon.Sampler
 
 	mu        sync.RWMutex
 	summary   Summary
@@ -200,8 +214,9 @@ type Collector struct {
 	powerAvg  PowerAvg // snapshot of the power EWMAs (read by Power())
 
 	// Per-component EWMA averages (owned by the sampler goroutine).
-	cpuL, memL, gpuL, ssdL, netL ewma3 // utilization averages
-	cpuPwrL, gpuPwrL, totPwrL    ewma3 // power averages (watts)
+	cpuL, memL, gpuL, ssdL, netL ewma3   // utilization averages
+	cpuPwrL, gpuPwrL, totPwrL    ewma3   // power averages (watts)
+	gpuPwrLs                     []ewma3 // per-GPU power EWMAs (index-aligned to Summary.GPUs)
 
 	// Owned exclusively by the single sampler goroutine (and the synchronous Start()
 	// call that happens-before it) — never touched elsewhere, so they need no lock.
@@ -215,10 +230,10 @@ type Collector struct {
 	prevDiskTime                                time.Time
 }
 
-// New returns a collector sampling at the given interval (~120s of history at 2s).
-// The GPU, network and power samplers are injected so the daemon owns their lifecycles.
-func New(interval time.Duration, g *gpu.Sampler, n *netmon.Sampler, p *powermon.Sampler) *Collector {
-	return &Collector{interval: interval, ringCap: 180, gpu: g, net: n, power: p, prevProc: map[int32]procCPU{}, ncpu: runtime.NumCPU()}
+// New returns a collector sampling at the given interval (~120s of history at 2s). The GPU,
+// network, power and disk samplers are injected so the daemon owns their lifecycles.
+func New(interval time.Duration, g *gpu.Sampler, n *netmon.Sampler, p *powermon.Sampler, d *diskmon.Sampler) *Collector {
+	return &Collector{interval: interval, ringCap: 180, gpu: g, net: n, power: p, disk: d, prevProc: map[int32]procCPU{}, ncpu: runtime.NumCPU()}
 }
 
 // Start loads static host info, primes the first sample, then samples on a ticker.
@@ -311,21 +326,26 @@ func (c *Collector) sample() {
 		s.Uptime = up
 	}
 
-	procs := c.sampleProcs(now, gpuSnap, c.net.Get())
+	procs := c.sampleProcs(now, gpuSnap, c.net.Get(), c.disk.Get())
 	s.Procs = len(procs)
 
 	var gpuPct, gpuW float64
-	for _, g := range s.GPUs {
+	gpuUtils := make([]float64, len(s.GPUs))
+	gpuWatts := make([]float64, len(s.GPUs))
+	for i, g := range s.GPUs {
 		if g.UtilPercent > gpuPct {
 			gpuPct = g.UtilPercent
 		}
 		gpuW += g.PowerW
+		gpuUtils[i] = g.UtilPercent
+		gpuWatts[i] = g.PowerW
 	}
 	smp := Sample{
 		Time:     s.Time,
 		CPU:      s.CPUPercent,
 		Mem:      s.MemPercent,
 		GPU:      gpuPct,
+		GPUs:     gpuUtils,
 		SSDBusy:  s.SysDiskBusyPercent,
 		SSDRead:  s.SysDiskReadRate,
 		SSDWrite: s.SysDiskWriteRate,
@@ -348,7 +368,19 @@ func (c *Collector) sample() {
 	c.cpuPwrL.update(cpuW, dt)
 	c.gpuPwrL.update(gpuW, dt)
 	c.totPwrL.update(totW, dt)
-	psmp := PowerSample{Time: s.Time, CPU: round(cpuW), GPU: round(gpuW), Total: round(totW)}
+
+	// Per-GPU power series + EWMA averages (index-aligned to Summary.GPUs).
+	for len(c.gpuPwrLs) < len(gpuWatts) {
+		c.gpuPwrLs = append(c.gpuPwrLs, ewma3{})
+	}
+	gpuWattsR := make([]float64, len(gpuWatts))
+	gpuPwrAvgs := make([]Avg, len(gpuWatts))
+	for i := range gpuWatts {
+		c.gpuPwrLs[i].update(gpuWatts[i], dt)
+		gpuPwrAvgs[i] = c.gpuPwrLs[i].avg()
+		gpuWattsR[i] = round(gpuWatts[i])
+	}
+	psmp := PowerSample{Time: s.Time, CPU: round(cpuW), GPU: round(gpuW), GPUs: gpuWattsR, Total: round(totW)}
 
 	c.mu.Lock()
 	c.summary = s
@@ -362,7 +394,7 @@ func (c *Collector) sample() {
 	if len(c.powerRing) > c.ringCap {
 		c.powerRing = append([]PowerSample(nil), c.powerRing[len(c.powerRing)-c.ringCap:]...)
 	}
-	c.powerAvg = PowerAvg{CPU: c.cpuPwrL.avg(), GPU: c.gpuPwrL.avg(), Total: c.totPwrL.avg()}
+	c.powerAvg = PowerAvg{CPU: c.cpuPwrL.avg(), GPU: c.gpuPwrL.avg(), GPUs: gpuPwrAvgs, Total: c.totPwrL.avg()}
 	c.mu.Unlock()
 }
 
@@ -452,7 +484,7 @@ func (c *Collector) diskRates(now time.Time) (read, write, busy float64) {
 	return round(read), round(write), round(busy)
 }
 
-func (c *Collector) sampleProcs(now time.Time, gpuSnap gpu.Snapshot, netRates map[int32]netmon.Rate) []Process {
+func (c *Collector) sampleProcs(now time.Time, gpuSnap gpu.Snapshot, netRates map[int32]netmon.Rate, diskRates map[int32]diskmon.Rate) []Process {
 	ps, err := process.Processes()
 	if err != nil {
 		c.mu.RLock()
@@ -496,10 +528,13 @@ func (c *Collector) sampleProcs(now time.Time, gpuSnap gpu.Snapshot, netRates ma
 			Status:     status,
 		}
 		if g, ok := gpuSnap.Proc[p.Pid]; ok {
-			proc.GPUPercent, proc.GPUEngine, proc.GPUMem = g.Util, g.Engine, g.Mem
+			proc.GPUPercent, proc.GPUEngine, proc.GPUMem, proc.GPUDevices = g.Util, g.Engine, g.Mem, g.PerGPU
 		}
 		if r, ok := netRates[p.Pid]; ok {
 			proc.NetRxRate, proc.NetTxRate = round(r.Rx), round(r.Tx)
+		}
+		if d, ok := diskRates[p.Pid]; ok {
+			proc.DiskReadRate, proc.DiskWriteRate = round(d.Read), round(d.Write)
 		}
 		out = append(out, proc)
 	}

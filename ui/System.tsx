@@ -155,7 +155,7 @@ export function System({ api }: ServiceContextProps) {
           icon={<GpuIcon className="h-5 w-5 text-gpu" />}
           tileClass="bg-gpu/15"
           title={g.name || t('hostek.graphics')}
-          subtitle={join(g.driver && `${t('hostek.driver')} ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
+          subtitle={join(hw.gpus!.length > 1 ? `GPU ${i}` : undefined, g.driver && `${t('hostek.driver')} ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
         >
           <Spec label="VRAM" value={g.memTotalBytes ? formatBytes(g.memTotalBytes) : undefined} />
           <Spec label={t('hostek.baseClock')} value={mhz(g.baseClockMhz)} />

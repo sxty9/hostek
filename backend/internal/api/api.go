@@ -11,11 +11,13 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"hostek/internal/auth"
 	"hostek/internal/gpu"
 	"hostek/internal/hardware"
 	"hostek/internal/metrics"
+	"hostek/internal/shutdown"
 	"hostek/internal/sysconfig"
 )
 
@@ -38,14 +40,15 @@ const (
 
 // Server wires the verifier and collectors into HTTP handlers.
 type Server struct {
-	v  *auth.Verifier
-	c  *metrics.Collector
-	hw *hardware.Collector
+	v    *auth.Verifier
+	c    *metrics.Collector
+	hw   *hardware.Collector
+	shut *shutdown.Manager
 }
 
 // New builds a server.
-func New(v *auth.Verifier, c *metrics.Collector, hw *hardware.Collector) *Server {
-	return &Server{v: v, c: c, hw: hw}
+func New(v *auth.Verifier, c *metrics.Collector, hw *hardware.Collector, shut *shutdown.Manager) *Server {
+	return &Server{v: v, c: c, hw: hw, shut: shut}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -66,6 +69,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+base+"processes", s.guard(permProc, false, s.processes))
 	mux.HandleFunc("GET "+base+"config/power", s.guard(permPower, false, s.getPower))
 	mux.HandleFunc("POST "+base+"config/power", s.guard(permPower, true, s.setPower))
+	// Emergency shutdown („Not-Aus"). The two config routes are admin-gated (reusing the
+	// power right); the two bare shutdown routes are deliberately UNAUTHENTICATED so the
+	// holistic login page can reach them before there is a session — the configured
+	// password in the body is the sole gate (see the shutdown package).
+	mux.HandleFunc("GET "+base+"config/shutdown", s.guard(permPower, false, s.getShutdownConfig))
+	mux.HandleFunc("POST "+base+"config/shutdown", s.guard(permPower, true, s.setShutdownConfig))
+	mux.HandleFunc("GET "+base+"shutdown", s.shutdownStatus)
+	mux.HandleFunc("POST "+base+"shutdown", s.shutdownTrigger)
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -325,6 +336,109 @@ func (s *Server) setPower(w http.ResponseWriter, r *http.Request, _ *auth.User) 
 		}
 	}
 	writeJSON(w, http.StatusOK, sysconfig.Read())
+}
+
+// getShutdownConfig serves the admin Config panel's state: whether Not-Aus is armed and
+// whether a password has been set. The password/hash is never returned.
+func (s *Server) getShutdownConfig(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
+	armed, configured := s.shut.Config()
+	writeJSON(w, http.StatusOK, map[string]bool{"armed": armed, "configured": configured})
+}
+
+// setShutdownConfig arms/disarms Not-Aus and/or sets its password. Both fields are
+// optional; the password is applied before the arm flag so a set-and-arm in one request
+// succeeds (arming refuses without a configured password).
+func (s *Server) setShutdownConfig(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	var body struct {
+		Armed    *bool   `json:"armed"`
+		Password *string `json:"password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if body.Armed == nil && body.Password == nil {
+		writeErr(w, http.StatusBadRequest, "No setting to change")
+		return
+	}
+	if body.Password != nil {
+		switch err := s.shut.SetPassword(*body.Password, u.Username); {
+		case err == nil:
+			log.Printf("hostek: emergency shutdown password set by %s", u.Username)
+		case errors.Is(err, shutdown.ErrPasswordTooShort), errors.Is(err, shutdown.ErrPasswordTooLong):
+			writeErr(w, http.StatusBadRequest, "Password must be between 6 and 72 characters")
+			return
+		default:
+			log.Printf("hostek: set emergency shutdown password failed: %v", err)
+			writeErr(w, http.StatusInternalServerError, "Failed to save emergency shutdown password")
+			return
+		}
+	}
+	if body.Armed != nil {
+		switch err := s.shut.SetArmed(*body.Armed, u.Username); {
+		case err == nil:
+			state := "disarmed"
+			if *body.Armed {
+				state = "armed"
+			}
+			log.Printf("hostek: emergency shutdown %s by %s", state, u.Username)
+		case errors.Is(err, shutdown.ErrNotConfigured):
+			writeErr(w, http.StatusBadRequest, "Set a password before enabling")
+			return
+		default:
+			log.Printf("hostek: arm emergency shutdown failed: %v", err)
+			writeErr(w, http.StatusInternalServerError, "Failed to update emergency shutdown")
+			return
+		}
+	}
+	armed, configured := s.shut.Config()
+	writeJSON(w, http.StatusOK, map[string]bool{"armed": armed, "configured": configured})
+}
+
+// shutdownStatus is UNAUTHENTICATED (like health): the holistic login page probes it
+// before there is a session, to decide whether to show the Not-Aus button. It reveals
+// only whether the feature is armed — nothing sensitive.
+func (s *Server) shutdownStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"armed": s.shut.Status()})
+}
+
+// shutdownTrigger is UNAUTHENTICATED and carries no CSRF token (holistic issues none
+// before login): the configured emergency password in the body is the sole gate, and
+// the shutdown package rate-limits + locks out to blunt brute force. On success the
+// machine powers off shortly after this response is flushed, so the caller sees the
+// confirmation first.
+func (s *Server) shutdownTrigger(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil || body.Password == "" {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	switch err := s.shut.Verify(body.Password); {
+	case err == nil:
+		// authorized — fall through
+	case errors.Is(err, shutdown.ErrLockedOut):
+		log.Printf("hostek: emergency shutdown locked out after repeated failures")
+		writeErr(w, http.StatusTooManyRequests, "Too many attempts — try again later")
+		return
+	case errors.Is(err, shutdown.ErrNotArmed):
+		writeErr(w, http.StatusForbidden, "Emergency shutdown is not enabled")
+		return
+	default:
+		log.Printf("hostek: emergency shutdown attempt with wrong password")
+		writeErr(w, http.StatusUnauthorized, "Wrong password")
+		return
+	}
+	log.Printf("hostek: emergency shutdown authorized — powering off")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	// Power off only after the response has been flushed to the client.
+	go func() {
+		time.Sleep(time.Second)
+		if err := s.shut.Trigger(); err != nil {
+			log.Printf("hostek: emergency shutdown trigger failed: %v", err)
+		}
+	}()
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

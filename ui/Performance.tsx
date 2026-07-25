@@ -102,7 +102,8 @@ export function Performance({ api }: ServiceContextProps) {
 
   const gpus = s.gpus ?? [];
   const hasGpu = gpus.length > 0;
-  const gpuPct = gpus.reduce((m, g) => Math.max(m, g.utilPercent), 0);
+  // A single GPU stays the bare "GPU" (as before); only disambiguate by index for 2+.
+  const gpuLabel = (i: number) => (gpus.length > 1 ? `GPU ${i}` : 'GPU');
 
   const L = s.loads ?? { cpu: ZERO_AVG, mem: ZERO_AVG, gpu: ZERO_AVG, ssd: ZERO_AVG, net: ZERO_AVG };
   const pct = (v: number) => `${v.toFixed(0)}%`;
@@ -157,34 +158,33 @@ export function Performance({ api }: ServiceContextProps) {
     </Stack>
   );
 
-  const gpuPanel = () => (
-    <Stack gap={3}>
-      <HoverTitle color={C.gpu} label={t('hostek.gpuPanelTitle')} />
-      {gpus.map((g, i) => {
-        const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : ''].filter(Boolean).join(' · ');
-        return (
-          <Stack key={i} gap={1}>
-            <Stack direction="row" justify="between" gap={2}>
-              <Text variant="caption" color="secondary">
-                {t('hostek.gpuUtil', { index: g.index, pct: g.utilPercent.toFixed(0) })}
-              </Text>
-              {tp && (
-                <Text variant="caption" color="secondary">
-                  {tp}
-                </Text>
-              )}
-            </Stack>
-            <ProgressBar value={g.memPercent} tone="gpu" />
+  // Per-GPU hover panel: THAT gpu's mem bar, VRAM used/total, and temp/power.
+  const gpuPanel = (g: (typeof gpus)[number], i: number) => () => {
+    const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : ''].filter(Boolean).join(' · ');
+    return (
+      <Stack gap={3}>
+        <HoverTitle color={C.gpu} label={gpuLabel(i)} />
+        <Stack gap={1}>
+          <Stack direction="row" justify="between" gap={2}>
             <Text variant="caption" color="secondary">
-              VRAM {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
+              {t('hostek.gpuUtil', { index: g.index, pct: g.utilPercent.toFixed(0) })}
             </Text>
+            {tp && (
+              <Text variant="caption" color="secondary">
+                {tp}
+              </Text>
+            )}
           </Stack>
-        );
-      })}
-      <Divider />
-      <AvgRow avg={L.gpu} fmt={pct} />
-    </Stack>
-  );
+          <ProgressBar value={g.memPercent} tone="gpu" />
+          <Text variant="caption" color="secondary">
+            VRAM {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
+          </Text>
+        </Stack>
+        <Divider />
+        <AvgRow avg={L.gpu} fmt={pct} />
+      </Stack>
+    );
+  };
 
   const simplePanel = (color: string, label: string, detail: ReactNode, avg: Avg, fmt: (v: number) => string) => () => (
     <Stack gap={3}>
@@ -232,24 +232,24 @@ export function Performance({ api }: ServiceContextProps) {
           />
         </HoverPanel>
 
-        {hasGpu && (
-          <HoverPanel block width={340} panel={gpuPanel}>
+        {gpus.map((g, i) => (
+          <HoverPanel key={i} block width={340} panel={gpuPanel(g, i)}>
             <Stat
               className="h-full"
-              label="GPU"
-              value={gpuPct}
+              label={gpuLabel(i)}
+              value={g.utilPercent}
               unit="%"
               footer={
                 <Stack gap={1}>
-                  <ProgressBar value={gpuPct} tone="gpu" />
+                  <ProgressBar value={g.utilPercent} tone="gpu" />
                   <Text variant="caption" color="secondary">
-                    {formatBytes(gpus[0].memUsed)} / {formatBytes(gpus[0].memTotal)}
+                    {formatBytes(g.memUsed)} / {formatBytes(g.memTotal)}
                   </Text>
                 </Stack>
               }
             />
           </HoverPanel>
-        )}
+        ))}
 
         <HoverPanel
           block
@@ -318,7 +318,16 @@ export function Performance({ api }: ServiceContextProps) {
       <Grid minItemWidth={260} gap={3}>
         <MiniChart label="CPU" color={C.cpu} percent caption={`${s.cpuPercent}%`} lines={[{ data: cpuSeries, color: C.cpu, fill: true }]} />
         <MiniChart label={t('hostek.memory')} color={C.ram} percent caption={`${s.memPercent}%`} lines={[{ data: memSeries, color: C.ram, fill: true }]} />
-        {hasGpu && <MiniChart label="GPU" color={C.gpu} percent caption={`${gpuPct}%`} lines={[{ data: gpuSeries, color: C.gpu, fill: true }]} />}
+        {gpus.map((g, i) => (
+          <MiniChart
+            key={i}
+            label={gpuLabel(i)}
+            color={C.gpu}
+            percent
+            caption={`${g.utilPercent.toFixed(0)}%`}
+            lines={[{ data: samples.map((x) => x.gpus?.[i] ?? 0), color: C.gpu, fill: true }]}
+          />
+        ))}
         <MiniChart
           label="SSD"
           color={C.ssd}

@@ -2,6 +2,7 @@ package hardware
 
 import (
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -99,9 +100,13 @@ func computeThermalMeta(info Info) []ThermalMeta {
 		if i < len(slow) && slow[i] > 0 {
 			crit, src = slow[i], "nvidia"
 		}
-		label := g.Name
-		if label == "" {
-			label = "GPU " + strconv.Itoa(i)
+		base := g.Name
+		if base == "" {
+			base = "GPU"
+		}
+		label := base
+		if len(info.GPUs) > 1 {
+			label = fmt.Sprintf("%s (GPU %d)", base, i)
 		}
 		out = append(out, ThermalMeta{Key: "gpu" + strconv.Itoa(i), Label: label, Source: src, CriticalC: crit})
 	}

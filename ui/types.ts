@@ -66,11 +66,13 @@ export interface PowerSample {
   time: number;
   cpu: number;
   gpu: number;
+  gpus?: number[]; // per-GPU watts, index-aligned to Summary.gpus
   total: number;
 }
 export interface PowerAvg {
   cpu: Avg;
   gpu: Avg;
+  gpus?: Avg[]; // per-GPU power averages, index-aligned to Summary.gpus
   total: Avg;
 }
 export interface PowerResponse {
@@ -100,6 +102,7 @@ export interface Sample {
   cpu: number;
   mem: number;
   gpu: number;
+  gpus?: number[]; // per-GPU util %, index-aligned to Summary.gpus
   ssdBusy: number;
   ssdRead: number;
   ssdWrite: number;
@@ -108,6 +111,13 @@ export interface Sample {
 }
 export interface SeriesResponse {
   samples: Sample[];
+}
+
+// One process's usage on a single GPU (index-aligned to Summary.gpus).
+export interface ProcGPUDev {
+  index: number;
+  util?: number; // SM % (compute only; graphics reports none)
+  mem?: number; // framebuffer bytes on this GPU
 }
 
 export interface Process {
@@ -119,9 +129,12 @@ export interface Process {
   memPercent: number;
   gpuPercent: number;
   gpuEngine?: string;
-  gpuMem?: number;
+  gpuMem?: number; // total VRAM across GPUs (bytes)
+  gpuDevices?: ProcGPUDev[]; // per-GPU split for the multi-GPU breakdown
   netRxRate: number;
   netTxRate: number;
+  diskReadRate?: number; // bytes/sec
+  diskWriteRate?: number; // bytes/sec
   status: string;
 }
 export interface ProcessesResponse {
@@ -317,4 +330,11 @@ export interface PowerState {
   tmuxPersist: boolean;
   tmuxResume: boolean;
   biosAutoPowerOn: BiosNote;
+}
+// State of the emergency-shutdown („Not-Aus") feature, for the admin Config panel.
+// `armed` = the switch is on; `configured` = a password has been set. The password
+// itself is never sent to the client.
+export interface ShutdownConfig {
+  armed: boolean;
+  configured: boolean;
 }

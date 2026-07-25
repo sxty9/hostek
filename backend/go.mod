@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/shirou/gopsutil/v4 v4.24.12
+	golang.org/x/crypto v0.31.0
 )
 
 require (
