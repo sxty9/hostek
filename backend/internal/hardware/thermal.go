@@ -41,14 +41,17 @@ func (c *Collector) Thermal() ThermalResponse {
 	}
 }
 
-// appendThermalLocked records one temperature sample for every known component.
-// Must be called with c.mu held.
-func (c *Collector) appendThermalLocked(now int64, d dynamic) {
-	if len(c.thermCrit) == 0 {
-		return
+// thermalSample builds one temperature reading for the dynamic values d against a
+// snapshot of the component list (crit) and per-disk SMART. It is pure — it reads no
+// Collector state and holds no lock — so the derivation stays outside the pool and the
+// append can be a pure store. ok is false when there is no component list yet or nothing
+// reported a temperature, i.e. there is nothing to record.
+func thermalSample(now int64, d dynamic, crit []ThermalMeta, smart map[string]SmartHealth) (ThermalSample, bool) {
+	if len(crit) == 0 {
+		return ThermalSample{}, false
 	}
 	temps := make(map[string]float64)
-	for _, m := range c.thermCrit {
+	for _, m := range crit {
 		switch {
 		case m.Key == "cpu":
 			if d.cpuTemp > 0 {
@@ -60,15 +63,22 @@ func (c *Collector) appendThermalLocked(now int64, d dynamic) {
 				temps[m.Key] = d.gpu[idx].tempC
 			}
 		default: // a disk
-			if sd, ok := c.smart[m.Key]; ok && sd.TempC > 0 {
+			if sd, ok := smart[m.Key]; ok && sd.TempC > 0 {
 				temps[m.Key] = sd.TempC
 			}
 		}
 	}
 	if len(temps) == 0 {
-		return
+		return ThermalSample{}, false
 	}
-	c.thermRing = append(c.thermRing, ThermalSample{Time: now, Temps: temps})
+	return ThermalSample{Time: now, Temps: temps}, true
+}
+
+// appendThermalSampleLocked records one prebuilt sample in the ring and trims it to
+// thermalCap (copying down so the trimmed head is freed, not pinned behind a reslice).
+// Pure storage — no evaluation; must be called with c.mu held.
+func (c *Collector) appendThermalSampleLocked(s ThermalSample) {
+	c.thermRing = append(c.thermRing, s)
 	if len(c.thermRing) > thermalCap {
 		c.thermRing = append([]ThermalSample(nil), c.thermRing[len(c.thermRing)-thermalCap:]...)
 	}
