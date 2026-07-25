@@ -363,13 +363,16 @@ func (c *Collector) sample() {
 	s.Loads = Loads{CPU: c.cpuL.avg(), Mem: c.memL.avg(), GPU: c.gpuL.avg(), SSD: c.ssdL.avg(), Net: c.netL.avg()}
 
 	// Per-component power (CPU via RAPL co-process, GPU via nvidia-smi) + averages.
+	// Like s.Loads above, the average is derived here — outside the pool lock, off the
+	// sampler-owned EWMA state — so the critical section below stays a pure store.
 	cpuW := c.power.Watts()
 	totW := cpuW + gpuW
 	c.cpuPwrL.update(cpuW, dt)
 	c.gpuPwrL.update(gpuW, dt)
 	c.totPwrL.update(totW, dt)
-
-	// Per-GPU power series + EWMA averages (index-aligned to Summary.GPUs).
+	// Per-GPU power series + EWMA averages (index-aligned to Summary.GPUs), derived
+	// here alongside the aggregate power average — all off the sampler-owned EWMA state,
+	// before the lock.
 	for len(c.gpuPwrLs) < len(gpuWatts) {
 		c.gpuPwrLs = append(c.gpuPwrLs, ewma3{})
 	}
@@ -381,20 +384,23 @@ func (c *Collector) sample() {
 		gpuWattsR[i] = round(gpuWatts[i])
 	}
 	psmp := PowerSample{Time: s.Time, CPU: round(cpuW), GPU: round(gpuW), GPUs: gpuWattsR, Total: round(totW)}
+	powerAvg := PowerAvg{CPU: c.cpuPwrL.avg(), GPU: c.gpuPwrL.avg(), GPUs: gpuPwrAvgs, Total: c.totPwrL.avg()}
 
+	// Publish. Nothing here evaluates: the pool takes the finished snapshot, the two ring
+	// buffers take their new point (copying down on overflow so the trimmed head is freed,
+	// not pinned behind a reslice), and the power average is stored as computed above.
 	c.mu.Lock()
 	c.summary = s
 	c.procs = procs
 	c.ring = append(c.ring, smp)
 	if len(c.ring) > c.ringCap {
-		// Copy down so the trimmed head is released, not retained behind a reslice.
 		c.ring = append([]Sample(nil), c.ring[len(c.ring)-c.ringCap:]...)
 	}
 	c.powerRing = append(c.powerRing, psmp)
 	if len(c.powerRing) > c.ringCap {
 		c.powerRing = append([]PowerSample(nil), c.powerRing[len(c.powerRing)-c.ringCap:]...)
 	}
-	c.powerAvg = PowerAvg{CPU: c.cpuPwrL.avg(), GPU: c.gpuPwrL.avg(), GPUs: gpuPwrAvgs, Total: c.totPwrL.avg()}
+	c.powerAvg = powerAvg
 	c.mu.Unlock()
 }
 

@@ -230,8 +230,16 @@ func (c *Collector) probeSmart() {
 			m[name] = parseSmartData(out)
 		}
 	}
+
+	// Snapshot the previous liveness map so the merge below — which carries a
+	// present-but-silent disk's last-OK time forward — runs OUTSIDE the pool write.
+	// probeSmart is the sole writer of these maps, so nothing can overtake the snapshot
+	// before we publish, and the store stays a pure atomic swap.
+	c.mu.RLock()
+	prevOK := c.smartOK
+	c.mu.RUnlock()
+
 	now := time.Now()
-	c.mu.Lock()
 	// Stamp "now" for disks that answered, carry the previous success time forward
 	// for present-but-silent disks, and drop disks that left lsblk entirely.
 	ok := make(map[string]time.Time, len(names))
@@ -243,10 +251,20 @@ func (c *Collector) probeSmart() {
 		tried[name] = true
 		if _, responded := m[name]; responded {
 			ok[name] = now
-		} else if prev, had := c.smartOK[name]; had {
+		} else if prev, had := prevOK[name]; had {
 			ok[name] = prev
 		}
 	}
+
+	c.storeSmart(m, ok, tried)
+}
+
+// storeSmart publishes a completed SMART probe as ONE atomic write, so a reader (Disks)
+// never catches the health map, the per-disk liveness times, and the "probe has run" set
+// from different probe generations. Like storeStatic it only stores: the liveness merge
+// that produced these maps happened before the lock, outside the pool.
+func (c *Collector) storeSmart(m map[string]SmartHealth, ok map[string]time.Time, tried map[string]bool) {
+	c.mu.Lock()
 	c.smart = m
 	c.smartOK = ok
 	c.smartTried = tried
@@ -335,9 +353,22 @@ func (c *Collector) probeDynamic() {
 	d.gpu = readGPUDynamic()
 
 	now := time.Now().UnixMilli()
+
+	// Derive this tick's temperature reading from a consistent snapshot of the component
+	// list and per-disk SMART — OUTSIDE the pool write, so the store below only stores.
+	// Both fields are replaced wholesale by their probes (never mutated in place), so the
+	// snapshot headers stay valid to read after the lock is dropped.
+	c.mu.RLock()
+	crit := c.thermCrit
+	smart := c.smart
+	c.mu.RUnlock()
+	sample, ok := thermalSample(now, d, crit, smart)
+
 	c.mu.Lock()
 	c.dyn = d
-	c.appendThermalLocked(now, d)
+	if ok {
+		c.appendThermalSampleLocked(sample)
+	}
 	c.mu.Unlock()
 }
 
