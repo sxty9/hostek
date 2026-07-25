@@ -69,7 +69,7 @@ Voraussetzung: das **holistic**-Repo (mit externer-Plugin- + Caddy-import-Unters
 ist vorhanden und das Dashboard installiert.
 
 ```bash
-sudo ./hostek setup        # HOLISTIC_REPO wird autodetektiert (../holistic, /code/holistic, …)
+sudo ./hostek setup        # HOLISTIC_REPO wird autodetektiert (../holistic, ~/holistic, …)
 ```
 
 `setup` baut den Daemon, verdrahtet systemd + sudo + Caddy (inkl. der privilegierten read-only
@@ -103,7 +103,7 @@ Fehler folgen holistics Vertrag: `{"detail": "..."}`.
 
 `POST config/power {headless:true}` setzt OS-seitig: `HandleLidSwitch=ignore` (logind-Drop-in)
 und maskiert `sleep/suspend/hibernate`. Die UEFI-Einstellung **`Restore AC Power Loss = Power On`**
-ist firmware-seitig (bereits gesetzt, siehe `My UEFI Config/`) und wird nur **informativ** angezeigt.
+ist firmware-seitig (im Board-Firmware-Setup zu setzen, nicht aus dem OS schreibbar) und wird nur **informativ** angezeigt.
 
 ## Entwicklung (macOS)
 
