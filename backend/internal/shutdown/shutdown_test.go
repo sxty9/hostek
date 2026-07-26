@@ -3,18 +3,23 @@ package shutdown
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-// useTempState points the package at a throwaway state file and removes the per-attempt
-// delay so tests run instantly. It restores the originals on cleanup.
+// useTempState points the package at a throwaway state file, removes the per-attempt
+// delay, and drops the bcrypt cost to its minimum so tests run instantly. It restores
+// the originals on cleanup.
 func useTempState(t *testing.T) {
 	t.Helper()
-	origFile, origDelay := stateFile, attemptDelay
+	origFile, origDelay, origCost := stateFile, attemptDelay, bcryptCost
 	stateFile = filepath.Join(t.TempDir(), "shutdown.json")
 	attemptDelay = 0
-	t.Cleanup(func() { stateFile, attemptDelay = origFile, origDelay })
+	bcryptCost = bcrypt.MinCost
+	t.Cleanup(func() { stateFile, attemptDelay, bcryptCost = origFile, origDelay, origCost })
 }
 
 func TestSetPasswordAndVerify(t *testing.T) {
@@ -156,5 +161,49 @@ func TestPersistsAcrossManagers(t *testing.T) {
 	}
 	if err := second.Verify("stormy-night"); err != nil {
 		t.Fatalf("second Manager Verify = %v, want nil", err)
+	}
+}
+
+// TestConcurrentMutationsPreserveLatest stresses the atomic read-modify-write. One
+// goroutine hammers arm/disarm — each a load-modify-save that carries the password hash
+// forward from whatever it read — while another changes the password exactly once and
+// then stops. Nothing rewrites the new password afterward, so a single stale re-arm that
+// loaded the record before that write and saved after it latches the reversion: the
+// stored record verifies the OLD password forever. Without the state lock this is a
+// frequent race; with it, every writer loads the current record first, so once the new
+// password is set every subsequent re-arm carries it forward and Verify holds.
+func TestConcurrentMutationsPreserveLatest(t *testing.T) {
+	useTempState(t)
+	m := New()
+	if err := m.SetPassword("secret-old", "admin"); err != nil {
+		t.Fatalf("seed SetPassword: %v", err)
+	}
+	if err := m.SetArmed(true, "admin"); err != nil {
+		t.Fatalf("seed SetArmed: %v", err)
+	}
+
+	const armToggles = 4000
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < armToggles; i++ {
+			_ = m.SetArmed(i%2 == 0, "admin") // toggle; each call rewrites the whole record
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := m.SetPassword("secret-new", "admin"); err != nil { // exactly once
+			t.Errorf("SetPassword: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	// Re-arm so Verify has something to check, then confirm the new password survived.
+	if err := m.SetArmed(true, "admin"); err != nil {
+		t.Fatalf("final SetArmed: %v", err)
+	}
+	if err := m.Verify("secret-new"); err != nil {
+		t.Fatalf("Verify(secret-new) after concurrent re-arm = %v; a stale re-arm reverted the password", err)
 	}
 }
