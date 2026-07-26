@@ -2,7 +2,7 @@
 // (US) — that stays the canonical source; German and Japanese are translations.
 // Registered on import (see index.tsx). Live values, units (°C, W, %, GHz) and
 // proper nouns (CPU, GPU, SSD, BIOS, VRAM, CUDA, PID, MAC) stay as-is.
-import { registerMessages, type MessageVars } from '@holistic/ui';
+import { registerMessages, type MessageVars } from '@holisdk/ui';
 
 const n = (v: MessageVars, k: string) => Number(v[k] ?? 0);
 const plural = (c: number, one: string, many: string) => (c === 1 ? one : many);

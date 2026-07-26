@@ -19,7 +19,7 @@ import {
   useT,
   type ChartSeries,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { ReactNode } from 'react';
 import type { Avg, Sample, SeriesResponse, Summary } from './types';
 

@@ -1,4 +1,4 @@
-import { ActivityIcon, type ServicePlugin } from '@holistic/ui';
+import { ActivityIcon, type ServicePlugin } from '@holisdk/ui';
 import { Dashboard } from './Dashboard';
 import './i18n';
 

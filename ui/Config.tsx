@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Badge, Button, Field, Panel, PasswordInput, Stack, Switch, Text, useLiveQuery, useT, type ServiceContextProps } from '@holistic/ui';
+import { Badge, Button, Field, Panel, PasswordInput, Stack, Switch, Text, useLiveQuery, useT, type ServiceContextProps } from '@holisdk/ui';
 import type { PowerState, ShutdownConfig } from './types';
 
 export function Config({ api, ui }: ServiceContextProps) {

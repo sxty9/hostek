@@ -19,7 +19,7 @@ import {
   useLiveQuery,
   useT,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { ReactNode } from 'react';
 import type { HardwareInfo } from './types';
 

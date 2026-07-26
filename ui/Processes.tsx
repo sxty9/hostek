@@ -16,7 +16,7 @@ import {
   type Column,
   type ServiceContextProps,
   type StreamSeries,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { Process, ProcessesResponse } from './types';
 
 // ~60s of history at the 2s poll cadence, used to draw the per-column stream graphs.

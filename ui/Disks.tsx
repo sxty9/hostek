@@ -21,7 +21,7 @@ import {
   useT,
   userHasRight,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import { useState, type ReactNode } from 'react';
 import type { DiskDevice, DiskPartition, DisksResponse } from './types';
 
