@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ContentRegion, SegmentedControl, Stack, useT, userHasRight, type SegmentedOption, type ServiceContextProps } from '@holistic/ui';
+import { ContentRegion, SegmentedControl, Stack, useT, userHasRight, type SegmentedOption, type ServiceContextProps } from '@holisdk/ui';
 import { System } from './System';
 import { Performance } from './Performance';
 import { Power } from './Power';

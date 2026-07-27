@@ -19,8 +19,9 @@ import {
   useLiveQuery,
   useT,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { ReactNode } from 'react';
+import { DiskHealthBadge, joinDot } from './common';
 import type { HardwareInfo } from './types';
 
 // Atomic value formatters — every spec is a single simplified figure.
@@ -29,11 +30,6 @@ function mhz(v?: number): string | undefined {
   return v >= 1000 ? `${(v / 1000).toFixed(2)} GHz` : `${Math.round(v)} MHz`;
 }
 const degC = (v?: number) => (v && v > 0 ? `${Math.round(v)} °C` : undefined);
-const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ') || undefined;
-
-// Health verdict → Badge variant (anything but critical/warning reads as healthy).
-const statusVariant = (s?: 'healthy' | 'warning' | 'critical'): 'success' | 'warning' | 'danger' =>
-  s === 'critical' ? 'danger' : s === 'warning' ? 'warning' : 'success';
 
 function Spec({ label, value }: { label: string; value?: ReactNode }) {
   if (value === undefined || value === null || value === '') return null;
@@ -105,7 +101,7 @@ export function System({ api }: ServiceContextProps) {
         icon={<CpuIcon className="h-5 w-5 text-cpu" />}
         tileClass="bg-cpu/15"
         title={cpu.model || t('hostek.processor')}
-        subtitle={join(cpu.vendor, cpu.socket && `${t('hostek.socket')} ${cpu.socket}`)}
+        subtitle={joinDot(cpu.vendor, cpu.socket && `${t('hostek.socket')} ${cpu.socket}`)}
       >
         <Spec label={t('hostek.coresThreads')} value={cpu.cores ? `${cpu.cores} / ${cpu.threads ?? '?'}` : undefined} />
         <Spec label={t('hostek.baseClock')} value={mhz(cpu.baseClockMhz)} />
@@ -133,11 +129,11 @@ export function System({ api }: ServiceContextProps) {
                   {m.slot || `Slot ${i + 1}`}
                 </Text>
                 <Text variant="footnote" className="text-right tabular-nums">
-                  {join(m.sizeBytes ? formatBytes(m.sizeBytes) : undefined, m.type, mhz(m.configuredMhz || m.speedMhz))}
+                  {joinDot(m.sizeBytes ? formatBytes(m.sizeBytes) : undefined, m.type, mhz(m.configuredMhz || m.speedMhz))}
                 </Text>
               </Stack>
               {(m.manufacturer || m.partNumber || m.timings) && (
-                <Marquee text={join(m.manufacturer, m.partNumber, m.timings) ?? ''} className="text-caption text-text-secondary" />
+                <Marquee text={joinDot(m.manufacturer, m.partNumber, m.timings) ?? ''} className="text-caption text-text-secondary" />
               )}
             </Stack>
           ))
@@ -155,7 +151,7 @@ export function System({ api }: ServiceContextProps) {
           icon={<GpuIcon className="h-5 w-5 text-gpu" />}
           tileClass="bg-gpu/15"
           title={g.name || t('hostek.graphics')}
-          subtitle={join(hw.gpus!.length > 1 ? `GPU ${i}` : undefined, g.driver && `${t('hostek.driver')} ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
+          subtitle={joinDot(hw.gpus!.length > 1 ? `GPU ${i}` : undefined, g.driver && `${t('hostek.driver')} ${g.driver}`, g.cuda && `CUDA ${g.cuda}`)}
         >
           <Spec label="VRAM" value={g.memTotalBytes ? formatBytes(g.memTotalBytes) : undefined} />
           <Spec label={t('hostek.baseClock')} value={mhz(g.baseClockMhz)} />
@@ -170,7 +166,7 @@ export function System({ api }: ServiceContextProps) {
       <CompCard
         icon={<MotherboardIcon className="h-5 w-5 text-text-secondary" />}
         tileClass="bg-fill/15"
-        title={join(board.manufacturer, board.model) || t('hostek.mainboard')}
+        title={joinDot(board.manufacturer, board.model) || t('hostek.mainboard')}
         subtitle={board.version || undefined}
       >
         <Spec label={t('hostek.biosVendor')} value={board.biosVendor} />
@@ -183,20 +179,12 @@ export function System({ api }: ServiceContextProps) {
         icon={<SsdIcon className="h-5 w-5 text-ssd" />}
         tileClass="bg-ssd/15"
         title={disk.model || disk.device || t('hostek.systemDisk')}
-        subtitle={join(disk.type, disk.device && `/dev/${disk.device}`)}
+        subtitle={joinDot(disk.type, disk.device && `/dev/${disk.device}`)}
       >
         <Spec label={t('hostek.capacity')} value={disk.sizeBytes ? formatBytes(disk.sizeBytes) : undefined} />
         <Spec
           label={t('hostek.health')}
-          value={
-            disk.healthStatus ? (
-              <Badge variant={statusVariant(disk.healthStatus)}>
-                {t(disk.healthStatus === 'critical' ? 'hostek.statusCritical' : disk.healthStatus === 'warning' ? 'hostek.statusWarning' : 'hostek.statusHealthy')}
-              </Badge>
-            ) : disk.health ? (
-              <Badge variant={disk.health.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{disk.health}</Badge>
-            ) : undefined
-          }
+          value={disk.healthStatus || disk.health ? <DiskHealthBadge disk={disk} /> : undefined}
         />
         <Spec label={t('hostek.lifespan')} value={typeof disk.lifePercent === 'number' ? `${disk.lifePercent} %` : undefined} />
         <Spec label={t('hostek.uptimeAge')} value={typeof disk.agePercent === 'number' ? `${disk.agePercent} %` : undefined} />

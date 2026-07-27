@@ -12,7 +12,7 @@ import {
   useT,
   type ServiceContextProps,
   type StreamSeries,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { Avg, PowerResponse } from './types';
 
 const C = {

@@ -19,8 +19,9 @@ import {
   useT,
   type ChartSeries,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { ReactNode } from 'react';
+import { joinDot } from './common';
 import type { Avg, Sample, SeriesResponse, Summary } from './types';
 
 const ZERO_AVG: Avg = { a1: 0, a5: 0, a15: 0 };
@@ -160,7 +161,7 @@ export function Performance({ api }: ServiceContextProps) {
 
   // Per-GPU hover panel: THAT gpu's mem bar, VRAM used/total, and temp/power.
   const gpuPanel = (g: (typeof gpus)[number], i: number) => () => {
-    const tp = [g.tempC > 0 ? `${Math.round(g.tempC)} °C` : '', g.powerW > 0 ? `${Math.round(g.powerW)} W` : ''].filter(Boolean).join(' · ');
+    const tp = joinDot(g.tempC > 0 && `${Math.round(g.tempC)} °C`, g.powerW > 0 && `${Math.round(g.powerW)} W`);
     return (
       <Stack gap={3}>
         <HoverTitle color={C.gpu} label={gpuLabel(i)} />

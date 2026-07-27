@@ -15,7 +15,7 @@ import {
   useLiveQuery,
   useT,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { ThermalResponse, ThermalSample } from './types';
 
 function compColor(key: string): string {

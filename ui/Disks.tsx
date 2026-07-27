@@ -21,8 +21,9 @@ import {
   useT,
   userHasRight,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import { useState, type ReactNode } from 'react';
+import { DiskHealthBadge, joinDot } from './common';
 import type { DiskDevice, DiskPartition, DisksResponse } from './types';
 
 // The "Rate with AI" button routes disk health through the shared `aigentic` service
@@ -67,12 +68,6 @@ function ratePayload(disks: DiskDevice[]) {
       .map((p) => ({ mount: p.mount, fstype: p.fstype, usedBytes: p.used, totalBytes: p.total, percent: p.percent })),
   }));
 }
-
-const join = (...parts: (string | undefined | false)[]) => parts.filter(Boolean).join(' · ');
-
-// Health verdict → Badge variant. Anything but critical/warning reads as healthy.
-const statusVariant = (s: DiskDevice['healthStatus']): 'success' | 'warning' | 'danger' =>
-  s === 'critical' ? 'danger' : s === 'warning' ? 'warning' : 'success';
 
 // Remaining-life % → bar tone (green→amber→red as endurance runs out).
 const lifeTone = (p: number): 'ssd' | 'warning' | 'danger' => (p <= 10 ? 'danger' : p <= 25 ? 'warning' : 'ssd');
@@ -230,14 +225,8 @@ function DiskCard({ d, view, canMount, canEject, busy, onMount, onUnmount, onEje
   const Icon = d.rotational ? DiskIcon : SsdIcon;
   // Connection (SATA port / NVMe / USB) gets its own labeled row below, so keep
   // the subtitle to the device node + serial.
-  const subtitle = join(`/dev/${d.name}`, d.serial || '');
+  const subtitle = joinDot(`/dev/${d.name}`, d.serial || '');
   const connection = d.port || (d.transport && d.transport.toUpperCase()) || '';
-
-  const statusLabel: Record<'healthy' | 'warning' | 'critical', string> = {
-    healthy: t('hostek.statusHealthy'),
-    warning: t('hostek.statusWarning'),
-    critical: t('hostek.statusCritical'),
-  };
 
   // Raw SMART/NVMe counters — only present when the viewer holds the techinfo right
   // (the backend nils the whole object otherwise). 0 is a real, reassuring value.
@@ -369,11 +358,7 @@ function DiskCard({ d, view, canMount, canEject, busy, onMount, onUnmount, onEje
             {view.smart && (d.healthStatus || d.health) && (
               <Stack gap={0.5}>
                 <InfoRow label={t('hostek.health')}>
-                  {d.healthStatus ? (
-                    <Badge variant={statusVariant(d.healthStatus)}>{statusLabel[d.healthStatus]}</Badge>
-                  ) : (
-                    <Badge variant={d.health!.toUpperCase().includes('PASS') ? 'success' : 'warning'}>{d.health}</Badge>
-                  )}
+                  <DiskHealthBadge disk={d} />
                 </InfoRow>
                 {d.healthReason && d.healthStatus && d.healthStatus !== 'healthy' && (
                   <Text variant="caption" color="tertiary" className="text-right">
@@ -438,7 +423,7 @@ function DiskCard({ d, view, canMount, canEject, busy, onMount, onUnmount, onEje
                     {p.mount || `/dev/${p.name}`}
                   </Text>
                   <Text variant="caption" color="tertiary" truncate>
-                    {join(p.fstype || t('hostek.noFilesystem'), !p.mount && formatBytes(p.sizeBytes))}
+                    {joinDot(p.fstype || t('hostek.noFilesystem'), !p.mount && formatBytes(p.sizeBytes))}
                   </Text>
                 </Stack>
                 <Stack direction="row" align="center" gap={2} className="shrink-0">

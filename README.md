@@ -4,7 +4,7 @@
 hostek klinkt sich als Service in das [holistic](../holistic)-Dashboard ein: ein **Go-Daemon**
 liefert Live-Metriken (CPU, RAM, GPU, System-SSD-I/O, Netz + Task-Manager-artige Prozessliste mit
 GPU/Netz pro Prozess), ein Hardware-Inventar und eine Disk-Übersicht, und verwaltet OS-seitige
-Server-Einstellungen; das Frontend ist ein **`@holistic/ui`-Plugin**.
+Server-Einstellungen; das Frontend ist ein **`@holisdk/ui`-Plugin**.
 
 ## Architektur
 
@@ -57,7 +57,7 @@ backend/        Go-Daemon (hostekd)
   internal/api/     HTTP routes under /api/services/hostek/
 permissions/    hostek.json — the rights manifest (single source of truth for the
                 hp_hostek_* groups; installed to /etc/holistic/permissions.d/ by setup)
-ui/             @holistic/ui plugin (linked into holistic/frontend/external/hostek)
+ui/             @holisdk/ui plugin (linked into holistic/frontend/external/hostek)
 hostek          single-file CLI: setup/build/lifecycle. Generates the systemd unit,
                 Caddy route, sudoers drop-in + privileged power wrapper inline (no deploy/
                 tree); installs permissions/hostek.json and creates its backing groups.
