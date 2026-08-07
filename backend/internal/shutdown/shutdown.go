@@ -40,11 +40,12 @@ const (
 	lockoutDuration = time.Minute // how long the endpoint stays locked after too many failures.
 )
 
-// Overridable so tests can point at a temp file and skip the delay; production keeps the
-// real state path and the guessing-rate cap.
+// Overridable so tests can point at a temp file, skip the delay, and hash cheaply;
+// production keeps the real state path, the guessing-rate cap, and bcrypt's default cost.
 var (
 	stateFile    = "/var/lib/hostek/shutdown.json"
-	attemptDelay = time.Second // applied to every trigger attempt to slow automated guessing.
+	attemptDelay = time.Second        // applied to every trigger attempt to slow automated guessing.
+	bcryptCost   = bcrypt.DefaultCost // work factor for the stored password hash.
 )
 
 // Errors surfaced to the API layer, which maps them onto HTTP status codes.
@@ -68,6 +69,14 @@ type state struct {
 // Manager owns the in-memory brute-force guard; the armed config itself is read live
 // from disk so external edits (or a restart) are picked up without cached staleness.
 type Manager struct {
+	// stateMu serializes the load→mutate→save of the on-disk state so two concurrent
+	// mutators (a SetPassword racing a SetArmed) can't lose each other's change: save()
+	// alone publishes atomically (temp file + rename), but the read-modify-write around
+	// it is only indivisible while this lock is held. Kept separate from mu so a slow
+	// bcrypt hash or disk write never blocks the brute-force bookkeeping below.
+	stateMu sync.Mutex
+
+	// mu guards the in-memory brute-force guard (failures, lockedUntil) only.
 	mu          sync.Mutex
 	failures    int
 	lockedUntil time.Time
@@ -104,30 +113,46 @@ func (m *Manager) SetPassword(pw, user string) error {
 	case len(pw) > maxPasswordLen:
 		return ErrPasswordTooLong
 	}
-	st, err := load()
+	// Hash before taking stateMu — bcrypt is deliberately slow and needs no shared
+	// state, so keep it out of the serialized read-modify-write section.
+	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcryptCost)
 	if err != nil {
 		return err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	st.Hash = string(hash)
-	stamp(&st, user)
-	return save(st)
+	return m.update(func(st *state) error {
+		st.Hash = string(hash)
+		stamp(st, user)
+		return nil
+	})
 }
 
 // SetArmed arms or disarms the feature. Arming requires a password to exist first.
 func (m *Manager) SetArmed(on bool, user string) error {
+	return m.update(func(st *state) error {
+		if on && st.Hash == "" {
+			return ErrNotConfigured
+		}
+		st.Armed = on
+		stamp(st, user)
+		return nil
+	})
+}
+
+// update applies mutate to the on-disk state as one atomic read-modify-write: the
+// load, the change, and the save happen under stateMu so a concurrent mutator can
+// neither observe an intermediate state nor clobber this one's write with a stale copy.
+// mutate reports its own validation error (e.g. arming without a password), which is
+// returned without touching the file.
+func (m *Manager) update(mutate func(*state) error) error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	st, err := load()
 	if err != nil {
 		return err
 	}
-	if on && st.Hash == "" {
-		return ErrNotConfigured
+	if err := mutate(&st); err != nil {
+		return err
 	}
-	st.Armed = on
-	stamp(&st, user)
 	return save(st)
 }
 
